@@ -1,48 +1,28 @@
 import argparse
 import contextlib
-import importlib.util
 import io
 import json
-import sys
 import tempfile
 from pathlib import Path
 
-
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "henry_image.py"
-
-
-def load_module():
-    spec = importlib.util.spec_from_file_location("henry_image_workflow_under_test", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@contextlib.contextmanager
-def patched(obj, name, value):
-    old = getattr(obj, name)
-    setattr(obj, name, value)
-    try:
-        yield
-    finally:
-        setattr(obj, name, old)
+from helpers import load_module, patched
 
 
 def base_args(**overrides):
     data = dict(
         prompt="A simple blue ceramic cup on a white table",
         prompt_file=None,
+        image=[],
+        image_file_id=[],
+        mask=None,
+        mask_file_id=None,
         size="1024x1024",
         quality="medium",
-        model="gpt-5",
-        image_model="gpt-image-2",
-        base_url="https://api.openai.com/v1",
-        base_url_source="cli",
+        model="response-service",
+        image_model="image-service",
+        base_url="https://images.example/v1",
         api_key_env=None,
         route="responses",
-        candidate_policy="auto",
         n=1,
         output_format="png",
         images_response_format="auto",
@@ -57,7 +37,15 @@ def base_args(**overrides):
         dry_run=False,
         force=True,
         out="output/imagegen/workflow-test.png",
+        out_dir="output/imagegen/batch",
         background_job=False,
+        batch_input=None,
+        negative_prompt="",
+        use_case="auto",
+        review_template="auto",
+        platform="generic",
+        package_version="generic",
+        explain=False,
     )
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -78,7 +66,7 @@ def test_command_generate_dry_run_emits_workflow_metadata():
         assert workflow["mode"] == "generate"
         assert workflow["stage"] == "preview"
         assert workflow["next_action"]
-        assert "generate" in workflow["replay_command"]
+        assert workflow["replay_command"].startswith("python scripts/henry_image.py generate")
         assert payload["metadata"]["workflow_profile"]["version"] == 1
         assert not (cache_root / "workflow-profile.json").exists()
 
@@ -102,20 +90,8 @@ def test_command_generate_success_persists_workflow_profile():
         with patched(mod, "SKILL_CACHE_ROOT", cache_root):
             with patched(
                 mod,
-                "auth_profiles",
-                lambda *_args, **_kwargs: [
-                    mod.AuthProfile(
-                        "test-secret",
-                        "env:test",
-                        "bearer",
-                        {"Authorization": "Bearer test-secret"},
-                        {},
-                        {},
-                        {},
-                        "openai",
-                        "workflow-test",
-                    )
-                ],
+                "resolve_api_key",
+                lambda *_args, **_kwargs: ("test-secret", "HENRY_IMAGE_API_KEY"),
             ):
                 with patched(mod, "request_json", lambda *_args, **_kwargs: fake_result):
                     with contextlib.redirect_stdout(stdout):
@@ -133,12 +109,54 @@ def test_command_generate_success_persists_workflow_profile():
         assert profile["default_size"] == "1024x1024"
         assert profile["default_quality"] == "medium"
         assert payload["metadata"]["workflow_profile"]["last_mode"] == "generate"
+        assert "codex_access" not in payload["metadata"]
+        assert "candidate_attempts" not in payload["metadata"]
+
+
+def test_command_edit_dry_run_replay_command_keeps_edit_inputs():
+    mod = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache_root = root / ".cache"
+        image_path = root / "source.png"
+        mask_path = root / "mask.png"
+        image_path.write_bytes(b"source")
+        mask_path.write_bytes(b"mask")
+        args = base_args(
+            dry_run=True,
+            route="auto",
+            image=[str(image_path)],
+            image_file_id=["file-source-1"],
+            mask=str(mask_path),
+            mask_file_id="file-mask-1",
+            out=str(root / "edited.png"),
+        )
+        stdout = io.StringIO()
+        with patched(mod, "SKILL_CACHE_ROOT", cache_root):
+            with patched(
+                mod,
+                "resolve_api_key",
+                lambda *_args, **_kwargs: ("test-secret", "HENRY_IMAGE_API_KEY"),
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = mod.command_edit(args)
+        assert code == 0
+        payload = json.loads(stdout.getvalue())
+        replay_command = payload["metadata"]["workflow"]["replay_command"]
+        assert replay_command.startswith("python scripts/henry_image.py edit")
+        assert "--image " in replay_command
+        assert str(image_path) in replay_command
+        assert "--image-file-id file-source-1" in replay_command
+        assert "--mask " in replay_command
+        assert str(mask_path) in replay_command
+        assert "--mask-file-id file-mask-1" in replay_command
 
 
 if __name__ == "__main__":
     tests = [
         test_command_generate_dry_run_emits_workflow_metadata,
         test_command_generate_success_persists_workflow_profile,
+        test_command_edit_dry_run_replay_command_keeps_edit_inputs,
     ]
     for test in tests:
         test()

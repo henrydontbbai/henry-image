@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
+import uuid
 from pathlib import Path
 from typing import Any, Callable
-from urllib import request
+from urllib import error, request
 
 
 def output_paths(out: str, count: int, ext: str, force: bool) -> list[Path]:
@@ -75,8 +77,80 @@ def parse_error_body(status: int, detail: str) -> dict[str, Any]:
         "status": status,
         "code": error_data.get("code"),
         "type": error_data.get("type"),
-        "message": error_data.get("message", "API request failed."),
+        "message": error_data.get("message", "Remote service request failed."),
     }
+
+
+def request_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int, api_result_type: type) -> Any:
+    body = json.dumps(payload).encode("utf-8")
+    req = request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    for key, value in headers.items():
+        req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return api_result_type(True, response.status, data, None, response.headers.get("x-request-id"), 0)
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return api_result_type(False, exc.code, None, parse_error_body(exc.code, detail), exc.headers.get("x-request-id"), 0)
+    except error.URLError as exc:
+        return api_result_type(False, None, None, {"status": None, "code": "url_error", "message": str(exc.reason)}, None, 0)
+
+
+def build_multipart_body(
+    *,
+    fields: dict[str, str],
+    files: list[tuple[str, str, bytes]],
+) -> tuple[bytes, str]:
+    boundary = f"henry-image-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                value.encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    for name, filename, raw in files:
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{name}"; filename="{Path(filename).name}"\r\n'.encode("utf-8"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
+                raw,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), boundary
+
+
+def request_multipart(
+    url: str,
+    headers: dict[str, str],
+    fields: dict[str, str],
+    files: list[tuple[str, str, bytes]],
+    timeout: int,
+    api_result_type: type,
+) -> Any:
+    body, boundary = build_multipart_body(fields=fields, files=files)
+    req = request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    for key, value in headers.items():
+        req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return api_result_type(True, response.status, data, None, response.headers.get("x-request-id"), 0)
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return api_result_type(False, exc.code, None, parse_error_body(exc.code, detail), exc.headers.get("x-request-id"), 0)
+    except error.URLError as exc:
+        return api_result_type(False, None, None, {"status": None, "code": "url_error", "message": str(exc.reason)}, None, 0)
 
 
 def classify_api_failure(error_data: dict[str, Any] | None) -> str:
@@ -86,15 +160,15 @@ def classify_api_failure(error_data: dict[str, Any] | None) -> str:
     error_type = str(error_data.get("type") or "").lower()
     message = str(error_data.get("message") or "").lower()
     combined = " ".join((code, error_type, message))
-    if code in {"invalid_api_key", "incorrect_api_key", "authentication_error"} or status in {401, 403}:
+    if status in {401, 403}:
         return "invalid_credentials"
-    if "missing_openai_api_key" in combined or "missing api key" in combined:
+    if "missing" in combined and "key" in combined:
         return "missing_credentials"
-    if "insufficient_quota" in combined:
+    if "quota" in combined:
         return "quota_exceeded"
-    if "rate_limit" in combined or status == 429:
+    if "rate" in combined and "limit" in combined or status == 429:
         return "rate_limited"
-    if "content_policy" in combined or "safety" in combined:
+    if "policy" in combined or "unsafe" in combined:
         return "content_policy"
     if "timeout" in combined:
         return "timeout"
@@ -115,6 +189,37 @@ def failure_error_obj(error_data: dict[str, Any] | None) -> dict[str, Any]:
         "status": error_data.get("status"),
         "code": error_data.get("code"),
         "type": error_data.get("type"),
-        "message": error_data.get("message", "API request failed."),
+        "message": error_data.get("message", "Remote service request failed."),
         "category": error_data.get("category") or classify_api_failure(error_data),
     }
+
+
+def extract_response_images(data: dict[str, Any]) -> list[str]:
+    images: list[str] = []
+    for item in data.get("output", []):
+        if isinstance(item, dict) and item.get("type") == "image_generation_call" and item.get("result"):
+            images.append(str(item["result"]))
+        for content in item.get("content", []) if isinstance(item, dict) else []:
+            if isinstance(content, dict) and content.get("image_base64"):
+                images.append(str(content["image_base64"]))
+    for item in data.get("data", []):
+        if isinstance(item, dict) and item.get("b64_json"):
+            images.append(str(item["b64_json"]))
+    return images
+
+
+def extract_images_api_images(
+    data: dict[str, Any],
+    *,
+    timeout: int,
+    is_data_image_url: Callable[[str], bool],
+) -> list[bytes]:
+    images: list[bytes] = []
+    for item in data.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("b64_json"):
+            images.append(decode_image_b64(str(item["b64_json"])))
+        elif item.get("url"):
+            images.append(download_image(str(item["url"]), timeout, is_data_image_url=is_data_image_url))
+    return images

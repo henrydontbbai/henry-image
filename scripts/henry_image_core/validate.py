@@ -57,7 +57,7 @@ def validate_common(
     if args.images_response_format not in image_response_formats:
         raise ValueError("images-response-format must be auto, b64_json, or url.")
     if args.images_compat not in image_compat_modes:
-        raise ValueError("images-compat must be auto, openai, or minimal.")
+        raise ValueError("images-compat must be auto or minimal.")
     if args.input_fidelity not in input_fidelities:
         raise ValueError("input-fidelity must be auto, high, or low.")
     if args.background not in backgrounds:

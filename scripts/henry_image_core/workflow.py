@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 from typing import Any
 
 
@@ -78,22 +79,30 @@ def infer_workflow_stage(ok: bool, status: str, *, dry_run: bool = False) -> str
         return "preview"
     if ok:
         return "review"
-    if status in {"validation_error", "missing_credentials", "invalid_credentials"}:
+    if status in {"validation_error", "missing_credentials", "invalid_credentials", "missing_configuration"}:
         return "setup"
-    if status in {"rate_limited", "quota_exceeded", "image_provider_unavailable", "no_image_result"}:
+    if status in {"rate_limited", "quota_exceeded", "service_unavailable", "no_image_result"}:
         return "recover"
     return "retry"
 
 
 def build_replay_command(args: Any, out: str, command_name: str) -> str:
-    parts = ["python", '"$HOME/.codex/skills/henry-image/scripts/henry_image.py"', command_name]
+    parts = ["python", "scripts/henry_image.py", command_name]
     prompt = getattr(args, "prompt", None)
     prompt_file = getattr(args, "prompt_file", None)
     if prompt:
         parts.extend(["--prompt", prompt])
     elif prompt_file:
         parts.extend(["--prompt-file", prompt_file])
-    for field in ("size", "quality", "route", "candidate_policy", "model", "image_model", "output_format"):
+    for field in ("image", "image_file_id"):
+        values = getattr(args, field, None) or []
+        for value in values:
+            parts.extend([f"--{field.replace('_', '-')}", str(value)])
+    for field in ("mask", "mask_file_id"):
+        value = getattr(args, field, None)
+        if value:
+            parts.extend([f"--{field.replace('_', '-')}", str(value)])
+    for field in ("size", "quality", "route", "model", "image_model", "output_format", "base_url", "api_key_env"):
         value = getattr(args, field, None)
         if value:
             parts.extend([f"--{field.replace('_', '-')}", str(value)])
@@ -102,7 +111,7 @@ def build_replay_command(args: Any, out: str, command_name: str) -> str:
             parts.extend(["--out-dir", out])
         else:
             parts.extend(["--out", out])
-    return " ".join(parts)
+    return " ".join(shlex.quote(part) for part in parts)
 
 
 def next_action_for_result(
@@ -115,18 +124,18 @@ def next_action_for_result(
 ) -> str:
     if ok:
         if mode == "batch":
-            return "Review the batch results JSONL and rerun only failed items if needed."
+            return "Review the batch results and rerun only failed items if needed."
         if mode == "edit":
             return "Review the edited image and continue from this output if another revision is needed."
         return "Review the generated image and reuse this command as the starting point for the next variation."
-    if status in {"missing_credentials", "invalid_credentials"}:
-        return "Check provider readiness first, then rerun the same command after local credential setup."
-    if status == "image_provider_unavailable":
-        return "Run probe-image-providers --format human, then retry after a verified provider is available."
+    if status in {"missing_credentials", "invalid_credentials", "missing_configuration"}:
+        return "Set the Henry Image configuration locally, then rerun the same command."
+    if status == "service_unavailable":
+        return "Check the remote image service status, then retry when the configured route is available."
     if status in {"rate_limited", "quota_exceeded"}:
-        return "Wait for provider recovery or switch to another verified route, then rerun the same command."
+        return "Wait for service recovery, then rerun the same command."
     if command_name == "batch":
-        return "Fix the failed task input or settings, then rerun the batch with --resume if appropriate."
+        return "Fix the failed task input or settings, then rerun the batch."
     return f"Fix the blocker and rerun: {replay_command}"
 
 

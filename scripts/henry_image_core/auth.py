@@ -1,35 +1,25 @@
 from __future__ import annotations
 
-from typing import Any
-
-from .contracts import AuthProfile
+import os
 
 
-def auth_profile_summary(profile: AuthProfile) -> dict[str, Any]:
-    return {
-        "auth_source": profile.source,
-        "auth_shape": profile.shape,
-        "header_names": list(profile.headers.keys()),
-        "query_names": list(profile.query.keys()),
-        "header_sources": dict(profile.header_sources),
-        "query_sources": dict(profile.query_sources),
-        "provider_family": profile.provider_family,
-        "adaptive_reason": profile.adaptive_reason,
-    }
+CANONICAL_API_KEY_ENV = "HENRY_IMAGE_API_KEY"
 
 
-def dedupe_auth_profiles(profiles: list[AuthProfile]) -> list[AuthProfile]:
-    deduped: list[AuthProfile] = []
-    seen: set[tuple[Any, ...]] = set()
-    for profile in profiles:
-        fingerprint = (
-            profile.shape,
-            profile.value,
-            tuple(sorted(profile.headers.items())),
-            tuple(sorted(profile.query.items())),
-        )
-        if fingerprint in seen:
+def env_get(name: str) -> str | None:
+    return os.environ.get(name)
+
+
+def resolve_api_key(api_key_env: str | None = None) -> tuple[str | None, str | None]:
+    env_names = [api_key_env] if api_key_env else [CANONICAL_API_KEY_ENV]
+    for name in env_names:
+        if not name:
             continue
-        deduped.append(profile)
-        seen.add(fingerprint)
-    return deduped
+        value = env_get(name)
+        if value:
+            return value, name
+    return None, None
+
+
+def bearer_headers(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"}

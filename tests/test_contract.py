@@ -1,0 +1,202 @@
+import argparse
+import base64
+import contextlib
+import io
+import json
+import tempfile
+from pathlib import Path
+
+from helpers import load_module, patched, patched_env, run_cli
+
+
+def marker(*parts):
+    return "".join(parts)
+
+
+def base_args(**overrides):
+    data = dict(
+        prompt="A clean product photo of a ceramic cup",
+        prompt_file=None,
+        image=[],
+        image_file_id=[],
+        mask=None,
+        mask_file_id=None,
+        size="1024x1024",
+        quality="medium",
+        model=None,
+        image_model=None,
+        base_url=None,
+        api_key_env=None,
+        route="responses",
+        n=1,
+        output_format="png",
+        images_response_format="auto",
+        images_compat="auto",
+        input_fidelity="auto",
+        output_compression=None,
+        background="auto",
+        moderation="auto",
+        partial_images=0,
+        timeout=5,
+        retries=0,
+        dry_run=False,
+        force=True,
+        out="output/imagegen/test.png",
+        out_dir="output/imagegen/batch",
+        background_job=False,
+        batch_input=None,
+        negative_prompt="",
+        use_case="auto",
+        review_template="auto",
+        platform="generic",
+        package_version="generic",
+        explain=False,
+    )
+    data.update(overrides)
+    return argparse.Namespace(**data)
+
+
+def read_payload(code, stdout):
+    assert code in {0, 1}, stdout
+    return json.loads(stdout)
+
+
+def data_url(raw: bytes, mime: str = "image/png") -> str:
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def test_generate_responses_requires_explicit_model():
+    mod = load_module()
+    args = base_args(route="responses", image_model="image-service")
+    stdout = io.StringIO()
+    with patched_env(
+        HENRY_IMAGE_BASE_URL="https://images.example/v1",
+        HENRY_IMAGE_API_KEY="secret-key",
+        HENRY_IMAGE_MODEL=None,
+        HENRY_IMAGE_IMAGE_MODEL=None,
+    ):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_generate(args)
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "model is required for route responses" in payload["error"]["message"].lower()
+
+
+def test_generate_images_requires_explicit_image_model():
+    mod = load_module()
+    args = base_args(route="images", model="response-service")
+    stdout = io.StringIO()
+    with patched_env(
+        HENRY_IMAGE_BASE_URL="https://images.example/v1",
+        HENRY_IMAGE_API_KEY="secret-key",
+        HENRY_IMAGE_MODEL=None,
+        HENRY_IMAGE_IMAGE_MODEL=None,
+    ):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_generate(args)
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "image-model is required for route images" in payload["error"]["message"].lower()
+
+
+def test_generate_auto_requires_both_models():
+    mod = load_module()
+    args = base_args(route="auto", model="response-service", image_model=None)
+    stdout = io.StringIO()
+    with patched_env(
+        HENRY_IMAGE_BASE_URL="https://images.example/v1",
+        HENRY_IMAGE_API_KEY="secret-key",
+        HENRY_IMAGE_MODEL=None,
+        HENRY_IMAGE_IMAGE_MODEL=None,
+    ):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_generate(args)
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "both model and image-model are required for route auto" in payload["error"]["message"].lower()
+
+
+def test_external_aliases_are_not_used_for_api_key_resolution():
+    mod = load_module()
+    with patched_env(
+        HENRY_IMAGE_API_KEY=None,
+        **{
+            marker("OPEN", "AI_API_KEY"): "legacy-key",
+            marker("AZ", "URE_OPEN", "AI_API_KEY"): "azure-key",
+        },
+    ):
+        assert mod.resolve_api_key(None) == (None, None)
+
+
+def test_explicit_api_key_env_overrides_default_henry_key():
+    mod = load_module()
+    with patched_env(HENRY_IMAGE_API_KEY="default-key", CUSTOM_HENRY_KEY="explicit-key"):
+        assert mod.resolve_api_key("CUSTOM_HENRY_KEY") == ("explicit-key", "CUSTOM_HENRY_KEY")
+
+
+def test_removed_public_commands_and_flags_are_hidden():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        top = run_cli(["--help"], root)
+        assert top.returncode == 0, top.stderr + top.stdout
+        assert marker("probe-image-", "providers") not in top.stdout
+        assert marker("provider-", "cache") not in top.stdout
+
+        gen = run_cli(["generate", "--help"], root)
+        assert gen.returncode == 0, gen.stderr + gen.stdout
+        assert "--" + marker("candidate-", "policy") not in gen.stdout
+
+
+def test_prompt_package_is_generic_only():
+    mod = load_module()
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        out="output/imagegen/prompt-package.json",
+    )
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        code = mod.command_prompt(args)
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 0
+    package = payload["outputs"][0]["package"]
+    package_text = json.dumps(package, ensure_ascii=False)
+    for banned in (
+        marker("Fl", "ux"),
+        marker("SD", "XL"),
+        marker("Mid", "journey"),
+        marker("Comfy", "UI"),
+        marker("open", "ai"),
+    ):
+        assert banned not in package_text
+
+
+def test_build_edit_inputs_decode_inline_data_urls_for_multipart_uploads():
+    mod = load_module()
+    source_bytes = b"source-image"
+    mask_bytes = b"mask-image"
+    source_url = data_url(source_bytes)
+    mask_url = data_url(mask_bytes)
+    args = base_args(image=[source_url], mask=mask_url)
+
+    response_inputs, multipart_files = mod.build_edit_inputs(args)
+
+    assert response_inputs[0]["image"] == source_url
+    assert any(item.get("role") == "mask" and item["image"] == mask_url for item in response_inputs)
+    assert ("image", "inline.png", source_bytes) in multipart_files
+    assert ("mask", "inline.png", mask_bytes) in multipart_files
+
+
+def test_quick_validate_passes_for_the_repo():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        proc = run_cli(["quick_validate"], root)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        payload = json.loads(proc.stdout)
+        assert payload["status"] == "completed"
+        assert payload["outputs"][0]["issues"] == []

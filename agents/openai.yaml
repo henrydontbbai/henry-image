@@ -1,6 +1,0 @@
-interface:
-  display_name: "Henry Image MAIN"
-  short_description: "Generate/edit Henry Image outputs with CLI, local files, manifests, and dedicated provider setup checks"
-  default_prompt: "Use $henry-image / Henry Image MAIN. On first use or a new device, check dedicated provider setup with a no-cost dry-run and never ask Henry to paste secrets into chat. If HENRY_IMAGE_BASE_URL is visible, use that dedicated provider before Codex/AiMaMi. If Henry asks to generate, run, output, or save an image, call the Henry Image CLI generate/edit path and produce a local image plus manifest. If no dedicated provider is configured, normal gpt-image-2 generation uses --route responses --candidate-policy auto --model gpt-image-2 --image-model gpt-image-2 and omits --base-url so Codex/AiMaMi direct image providers can be discovered. Use prompt packages only for explicit prompt-only requests or after a checked CLI failure."
-policy:
-  allow_implicit_invocation: true

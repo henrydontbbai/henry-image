@@ -1,22 +1,56 @@
-# Henry Image Skill
+# Henry Image
 
-Henry Image is a Codex skill for Henry's image-generation workflow. It keeps the operational instructions, local CLI helper, and regression tests in one small project.
+Henry Image is a small local image workflow project for real image delivery, prompt packaging, and job recovery.
 
-## Structure
+Version: `0.2.0`
 
-- `SKILL.md` - skill entrypoint and routing rules.
-- `references/` - workflow notes, setup, routing, prompt compilation, review, and failure handling.
-- `scripts/henry_image.py` - CLI entrypoint.
-- `scripts/henry_image_core/` - CLI support modules.
-- `tests/` - pytest coverage for routing, auth, diagnostics, and workflow metadata.
-- `agents/` - local agent configuration.
+## What it does
 
-## Local Checks
+- generate a new image to a local file
+- edit an existing image
+- run JSONL batch work
+- check configuration with `probe`
+- build a generic prompt package with `prompt`
+- manage long-running background jobs
 
-Run the test suite from this directory:
+## Public configuration
 
-```powershell
-python -m pytest
+Only these public environment variables are supported:
+
+- `HENRY_IMAGE_BASE_URL`
+- `HENRY_IMAGE_API_KEY`
+- `HENRY_IMAGE_MODEL`
+- `HENRY_IMAGE_IMAGE_MODEL`
+
+## Main commands
+
+```text
+generate
+edit
+batch
+probe
+prompt
+job-status
+job-diagnose
+job-cancel
+job-list
+job-cleanup
+quick_validate
 ```
 
-Generated caches, output images, logs, and local environment files are intentionally ignored by git.
+## Local checks
+
+```powershell
+python -m pytest -q
+python .\scripts\henry_image.py quick_validate
+```
+
+## Layout
+
+- `SKILL.md` - behavior and routing notes
+- `agents/henry-image.yaml` - local agent defaults
+- `references/` - short operational references
+- `scripts/henry_image.py` - CLI entrypoint
+- `scripts/henry_image_core/` - support modules
+- `tests/` - regression coverage
+- `.github/workflows/ci.yml` - minimal CI

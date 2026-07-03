@@ -1,0 +1,6 @@
+interface:
+  display_name: "Henry Image"
+  short_description: "Generate, edit, diagnose, and batch local image outputs with Henry Image"
+  default_prompt: "Use Henry Image first for image-output requests. Verify setup with a dry run or probe when needed. Use generate, edit, or batch for real image delivery. Use prompt only when prompt output is explicitly requested or image delivery is blocked. Keep secrets out of chat. For exact-dimension work, switch to SVG, PDF, or a written specification."
+policy:
+  allow_implicit_invocation: true
