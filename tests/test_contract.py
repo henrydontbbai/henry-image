@@ -577,6 +577,7 @@ def test_generate_responses_invalid_remote_base64_returns_validation_error():
             route="responses",
             model="response-service",
             image_model="image-service",
+            base_url="https://images.example/v1",
             out=str(root / "broken.png"),
         )
         with patched(mod, "SKILL_CACHE_ROOT", root / ".cache"):
