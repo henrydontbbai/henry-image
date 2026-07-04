@@ -9,6 +9,58 @@ from typing import Any, Callable
 from urllib import error, request
 
 
+class NetworkOperationError(Exception):
+    def __init__(self, error_data: dict[str, Any]):
+        super().__init__(str(error_data.get("message") or "Remote network operation failed."))
+        self.error_data = error_data
+
+
+def transport_error_data(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, error.URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            message = str(reason) or "The read operation timed out."
+            return {"status": None, "code": "timeout", "message": message}
+        return {"status": None, "code": "url_error", "message": str(reason)}
+    if isinstance(exc, TimeoutError):
+        return {"status": None, "code": "timeout", "message": str(exc) or "The read operation timed out."}
+    return {"status": None, "code": "network_error", "message": str(exc) or "Remote network operation failed."}
+
+
+def safe_urlopen(target: Any, timeout: int):
+    try:
+        return request.urlopen(target, timeout=timeout)
+    except error.HTTPError:
+        raise
+    except error.URLError as exc:
+        raise NetworkOperationError(transport_error_data(exc)) from exc
+    except TimeoutError as exc:
+        raise NetworkOperationError(transport_error_data(exc)) from exc
+
+
+def read_response_bytes(response: Any) -> bytes:
+    try:
+        return response.read()
+    except error.HTTPError:
+        raise
+    except error.URLError as exc:
+        raise NetworkOperationError(transport_error_data(exc)) from exc
+    except TimeoutError as exc:
+        raise NetworkOperationError(transport_error_data(exc)) from exc
+
+
+def http_error_data(exc: error.HTTPError, *, default_message: str) -> dict[str, Any]:
+    detail = ""
+    try:
+        detail = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        detail = ""
+    parsed = parse_error_body(exc.code, detail or str(exc.reason or exc) or default_message)
+    if not parsed.get("message"):
+        parsed["message"] = default_message
+    return parsed
+
+
 def output_paths(out: str, count: int, ext: str, force: bool) -> list[Path]:
     base = Path(out)
     if base.exists() and base.is_dir():
@@ -47,8 +99,11 @@ def decode_image_b64(value: str) -> bytes:
 def download_image(url: str, timeout: int, *, is_data_image_url: Callable[[str], bool]) -> bytes:
     if is_data_image_url(url):
         return decode_image_b64(url)
-    with request.urlopen(url, timeout=timeout) as response:
-        return response.read()
+    try:
+        with safe_urlopen(url, timeout) as response:
+            return read_response_bytes(response)
+    except error.HTTPError as exc:
+        raise NetworkOperationError(http_error_data(exc, default_message="Remote image download failed.")) from exc
 
 
 def write_images(images_b64: list[str], out: str, output_format: str, force: bool) -> list[dict[str, Any]]:
@@ -88,14 +143,13 @@ def request_json(url: str, headers: dict[str, str], payload: dict[str, Any], tim
     for key, value in headers.items():
         req.add_header(key, value)
     try:
-        with request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        with safe_urlopen(req, timeout) as response:
+            data = json.loads(read_response_bytes(response).decode("utf-8"))
             return api_result_type(True, response.status, data, None, response.headers.get("x-request-id"), 0)
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        return api_result_type(False, exc.code, None, parse_error_body(exc.code, detail), exc.headers.get("x-request-id"), 0)
-    except error.URLError as exc:
-        return api_result_type(False, None, None, {"status": None, "code": "url_error", "message": str(exc.reason)}, None, 0)
+        return api_result_type(False, exc.code, None, http_error_data(exc, default_message="Remote service request failed."), exc.headers.get("x-request-id"), 0)
+    except NetworkOperationError as exc:
+        return api_result_type(False, None, None, exc.error_data, None, 0)
 
 
 def build_multipart_body(
@@ -143,14 +197,13 @@ def request_multipart(
     for key, value in headers.items():
         req.add_header(key, value)
     try:
-        with request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        with safe_urlopen(req, timeout) as response:
+            data = json.loads(read_response_bytes(response).decode("utf-8"))
             return api_result_type(True, response.status, data, None, response.headers.get("x-request-id"), 0)
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        return api_result_type(False, exc.code, None, parse_error_body(exc.code, detail), exc.headers.get("x-request-id"), 0)
-    except error.URLError as exc:
-        return api_result_type(False, None, None, {"status": None, "code": "url_error", "message": str(exc.reason)}, None, 0)
+        return api_result_type(False, exc.code, None, http_error_data(exc, default_message="Remote service request failed."), exc.headers.get("x-request-id"), 0)
+    except NetworkOperationError as exc:
+        return api_result_type(False, None, None, exc.error_data, None, 0)
 
 
 def classify_api_failure(error_data: dict[str, Any] | None) -> str:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-07-04
+
+- convert remote request timeouts into structured CLI errors instead of Python tracebacks
+- handle remote edit-input download timeouts through the same structured error path
+- add troubleshooting guidance for upstream timeout behavior
+
 ## 0.2.0 - 2026-07-04
 
 - removed legacy naming and host-specific fallback behavior

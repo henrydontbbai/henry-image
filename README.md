@@ -2,7 +2,7 @@
 
 Henry Image is a small local image workflow project for real image delivery, prompt packaging, and job recovery.
 
-Version: `0.2.0`
+Version: `0.2.1`
 
 ## What it does
 
@@ -82,6 +82,7 @@ python .\scripts\henry_image.py quick_validate
 - Missing configuration: confirm all four `HENRY_IMAGE_*` variables are set in the current process.
 - Route validation error: use `--model` for `responses`, `--image-model` for `images`, and both for `auto`.
 - Readiness check: run `python .\scripts\henry_image.py probe --route auto --model response-model-v1 --image-model image-model-v1`
+- Upstream timeout: retry with a shorter `--timeout` for diagnosis, or treat it as a remote service issue if the CLI returns a structured `timeout` error.
 - Repository health: rerun `python .\scripts\henry_image.py quick_validate`
 
 ## Release Process

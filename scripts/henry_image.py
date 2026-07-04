@@ -32,6 +32,7 @@ from henry_image_core.jobs import job_id as build_job_id
 from henry_image_core.jobs import job_root, parse_duration_seconds, resolve_job_path
 from henry_image_core.prompts import build_prompt_package_v2, compile_prompt_task
 from henry_image_core.request import (
+    NetworkOperationError,
     classify_api_failure,
     extract_images_api_images,
     extract_response_images,
@@ -45,7 +46,7 @@ from henry_image_core.validate import read_prompt, validate_common
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "0.2.0"
+HENRY_IMAGE_VERSION = "0.2.1"
 HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
@@ -296,6 +297,24 @@ def route_metadata(config: dict[str, str], route: str) -> dict[str, Any]:
     }
 
 
+def network_failure_payload(
+    *,
+    command: str,
+    provider: dict[str, Any] | None,
+    error_data: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error_obj = failure_error_obj(error_data)
+    return envelope(
+        ok=False,
+        command=command,
+        status=error_obj["category"],
+        provider=provider or {"type": "henry-remote-service"},
+        error_obj=error_obj,
+        metadata=metadata,
+    )
+
+
 def read_binary_source(value: str, timeout: int) -> tuple[bytes, str]:
     if is_data_image_url(value):
         ext = value.split(";", 1)[0].split("/")[-1]
@@ -539,7 +558,15 @@ def attempt_route(
                 metadata=metadata,
                 request_id=result.request_id,
             )
-        images_raw = extract_images_api_images(result.data or {}, timeout=args.timeout, is_data_image_url=is_data_image_url)
+        try:
+            images_raw = extract_images_api_images(result.data or {}, timeout=args.timeout, is_data_image_url=is_data_image_url)
+        except NetworkOperationError as exc:
+            return network_failure_payload(
+                command=command,
+                provider=provider,
+                error_data=exc.error_data,
+                metadata=metadata,
+            )
         if not images_raw:
             return envelope(
                 ok=False,
@@ -600,7 +627,14 @@ def run_image_command_result(
     multipart_files: list[tuple[str, str, bytes]] | None = None
     is_edit = command.endswith(".edit")
     if is_edit:
-        edit_inputs, multipart_files = build_edit_inputs(args)
+        try:
+            edit_inputs, multipart_files = build_edit_inputs(args)
+        except NetworkOperationError as exc:
+            return network_failure_payload(
+                command=command,
+                provider={"type": "henry-remote-service"},
+                error_data=exc.error_data,
+            )
         if not edit_inputs:
             return envelope(
                 ok=False,

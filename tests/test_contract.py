@@ -3,8 +3,10 @@ import base64
 import contextlib
 import io
 import json
+import sys
 import tempfile
 from pathlib import Path
+from urllib import error
 
 from helpers import load_module, patched, patched_env, run_cli
 
@@ -64,6 +66,25 @@ def read_payload(code, stdout):
 def data_url(raw: bytes, mime: str = "image/png") -> str:
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+class FakeResponse:
+    def __init__(self, *, status=200, body=b"", read_exc=None, headers=None):
+        self.status = status
+        self._body = body
+        self._read_exc = read_exc
+        self.headers = headers or {}
+
+    def read(self):
+        if self._read_exc is not None:
+            raise self._read_exc
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_generate_responses_requires_explicit_model():
@@ -190,6 +211,173 @@ def test_build_edit_inputs_decode_inline_data_urls_for_multipart_uploads():
     assert any(item.get("role") == "mask" and item["image"] == mask_url for item in response_inputs)
     assert ("image", "inline.png", source_bytes) in multipart_files
     assert ("mask", "inline.png", mask_bytes) in multipart_files
+
+
+def test_probe_live_timeout_returns_structured_error_instead_of_traceback():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(route="responses", model="response-service", image_model="image-service", live=True)
+    stdout = io.StringIO()
+
+    def fake_urlopen(*_args, **_kwargs):
+        raise TimeoutError("The read operation timed out")
+
+    with patched(request_module.request, "urlopen", fake_urlopen):
+        with patched_env(
+            HENRY_IMAGE_BASE_URL="https://images.example/v1",
+            HENRY_IMAGE_API_KEY="secret-key",
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_probe(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "timeout"
+    assert payload["error"]["category"] == "timeout"
+    assert "timed out" in payload["error"]["message"].lower()
+
+
+def test_edit_remote_input_timeout_returns_structured_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        image=["https://example.com/source.png"],
+    )
+    stdout = io.StringIO()
+
+    def fake_urlopen(*_args, **_kwargs):
+        raise TimeoutError("The read operation timed out")
+
+    with patched(request_module.request, "urlopen", fake_urlopen):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_edit(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "timeout"
+    assert payload["error"]["category"] == "timeout"
+    assert "timed out" in payload["error"]["message"].lower()
+
+
+def test_probe_live_read_timeout_returns_structured_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(route="responses", model="response-service", image_model="image-service", live=True)
+    stdout = io.StringIO()
+
+    def fake_urlopen(*_args, **_kwargs):
+        return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
+
+    with patched(request_module.request, "urlopen", fake_urlopen):
+        with patched_env(
+            HENRY_IMAGE_BASE_URL="https://images.example/v1",
+            HENRY_IMAGE_API_KEY="secret-key",
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_probe(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "timeout"
+    assert payload["error"]["category"] == "timeout"
+    assert "timed out" in payload["error"]["message"].lower()
+
+
+def test_edit_remote_input_http_error_returns_structured_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        image=["https://example.com/source.png"],
+    )
+    stdout = io.StringIO()
+
+    def fake_urlopen(*_args, **_kwargs):
+        raise error.HTTPError(
+            url="https://example.com/source.png",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=io.BytesIO(b"Not Found"),
+        )
+
+    with patched(request_module.request, "urlopen", fake_urlopen):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_edit(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "not_found"
+    assert payload["error"]["category"] == "not_found"
+    assert "not found" in payload["error"]["message"].lower()
+
+
+def test_edit_images_route_read_timeout_returns_structured_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        image=[data_url(b"source-image")],
+    )
+    stdout = io.StringIO()
+
+    def fake_urlopen(*_args, **_kwargs):
+        return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
+
+    with patched(request_module.request, "urlopen", fake_urlopen):
+        with patched_env(
+            HENRY_IMAGE_BASE_URL="https://images.example/v1",
+            HENRY_IMAGE_API_KEY="secret-key",
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_edit(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "timeout"
+    assert payload["error"]["category"] == "timeout"
+    assert "timed out" in payload["error"]["message"].lower()
+
+
+def test_generate_images_result_url_timeout_returns_structured_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(route="images", image_model="image-service")
+    stdout = io.StringIO()
+
+    def fake_request_json(*_args, **_kwargs):
+        return mod.ApiResult(
+            True,
+            200,
+            {"data": [{"url": "https://example.com/result.png"}]},
+            None,
+            "req-timeout",
+            0,
+        )
+
+    def fake_urlopen(*_args, **_kwargs):
+        return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
+
+    with patched(mod, "request_json", fake_request_json):
+        with patched(request_module.request, "urlopen", fake_urlopen):
+            with patched_env(
+                HENRY_IMAGE_BASE_URL="https://images.example/v1",
+                HENRY_IMAGE_API_KEY="secret-key",
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "timeout"
+    assert payload["error"]["category"] == "timeout"
+    assert "timed out" in payload["error"]["message"].lower()
 
 
 def test_quick_validate_passes_for_the_repo():
