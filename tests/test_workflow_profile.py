@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -57,9 +58,14 @@ def test_command_generate_dry_run_emits_workflow_metadata():
         cache_root = Path(tmp) / ".cache"
         args = base_args(dry_run=True, out=str(Path(tmp) / "preview.png"))
         stdout = io.StringIO()
+        previous_key = os.environ.pop("HENRY_IMAGE_API_KEY", None)
         with patched(mod, "SKILL_CACHE_ROOT", cache_root):
             with contextlib.redirect_stdout(stdout):
-                code = mod.command_generate(args)
+                try:
+                    code = mod.command_generate(args)
+                finally:
+                    if previous_key is not None:
+                        os.environ["HENRY_IMAGE_API_KEY"] = previous_key
         assert code == 0
         payload = json.loads(stdout.getvalue())
         workflow = payload["metadata"]["workflow"]
@@ -67,6 +73,7 @@ def test_command_generate_dry_run_emits_workflow_metadata():
         assert workflow["stage"] == "preview"
         assert workflow["next_action"]
         assert workflow["replay_command"].startswith("python scripts/henry_image.py generate")
+        assert payload["metadata"]["auth_source"] == "not_required_for_dry_run"
         assert payload["metadata"]["workflow_profile"]["version"] == 1
         assert not (cache_root / "workflow-profile.json").exists()
 

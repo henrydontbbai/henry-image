@@ -13,7 +13,7 @@ HENRY_IMAGE_IMAGE_MODEL
 
 1. set the variables in the local environment
 2. start a new terminal or app session that can see them
-3. run a dry run or probe
+3. use `probe` for a readiness check or `generate --dry-run` for a command preview
 
 ## Dry run example
 
@@ -42,3 +42,5 @@ The output should show the selected route and the sources for:
 
 - `base_url_source`
 - `auth_source`
+
+Use `probe` when you do not need an output file. Use `generate --dry-run` when you want a replayable command preview for a real image run.

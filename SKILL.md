@@ -1,9 +1,9 @@
 ---
 name: henry-image
-description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V0.2.1. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
+description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V0.2.5. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
 ---
 
-# Henry Image V0.2.1
+# Henry Image V0.2.5
 
 ## Purpose
 
@@ -47,6 +47,12 @@ Advanced override:
 - `--route auto` requires both
 
 Missing values are configuration errors and should be reported plainly.
+
+## Output contract note
+
+- top-level JSON envelope fields are stable
+- `route`, `auth_source`, `auth_shape`, `base_url_source`, `replay_command`, `next_action`, and `workflow` are stable metadata fields
+- `workflow_profile` is diagnostic metadata and may change without compatibility guarantees
 
 ## Workflow
 

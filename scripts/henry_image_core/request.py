@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import mimetypes
 import uuid
@@ -93,7 +94,10 @@ def write_image_bytes(images_raw: list[bytes], out: str, output_format: str, for
 def decode_image_b64(value: str) -> bytes:
     if value.startswith("data:image/") and ";base64," in value:
         value = value.split(";base64,", 1)[1]
-    return base64.b64decode(value)
+    try:
+        return base64.b64decode(value)
+    except binascii.Error as exc:
+        raise ValueError("Invalid inline image data. Check the base64 content.") from exc
 
 
 def download_image(url: str, timeout: int, *, is_data_image_url: Callable[[str], bool]) -> bytes:
@@ -223,7 +227,7 @@ def classify_api_failure(error_data: dict[str, Any] | None) -> str:
         return "rate_limited"
     if "policy" in combined or "unsafe" in combined:
         return "content_policy"
-    if "timeout" in combined:
+    if "timeout" in combined or "timed out" in combined:
         return "timeout"
     if "url_error" in combined or "network" in combined:
         return "network_error"

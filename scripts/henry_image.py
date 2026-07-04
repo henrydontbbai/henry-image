@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import contextlib
 import json
 import mimetypes
@@ -46,7 +47,7 @@ from henry_image_core.validate import read_prompt, validate_common
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "0.2.1"
+HENRY_IMAGE_VERSION = "0.2.5"
 HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
@@ -95,7 +96,6 @@ RETRYABLE_FALLBACK_CATEGORIES = {
     "not_found",
     "timeout",
     "no_image_result",
-    "service_unavailable",
 }
 SECRET_PATTERNS = [
     re.compile(r"Bearer\s+[A-Za-z0-9_\-\.]+", re.IGNORECASE),
@@ -288,6 +288,20 @@ def resolve_remote_config(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def resolve_preview_config(args: argparse.Namespace) -> dict[str, str]:
+    apply_model_env_defaults(args)
+    base_url, base_url_source = resolve_base_url(getattr(args, "base_url", None))
+    if not base_url:
+        raise ValueError("base-url is required. Use --base-url or set HENRY_IMAGE_BASE_URL.")
+    validate_route_requirements(args)
+    return {
+        "base_url": base_url,
+        "base_url_source": base_url_source or "cli",
+        "api_key": "",
+        "auth_source": "not_required_for_dry_run",
+    }
+
+
 def route_metadata(config: dict[str, str], route: str) -> dict[str, Any]:
     return {
         "route": route,
@@ -315,6 +329,22 @@ def network_failure_payload(
     )
 
 
+def validation_failure_payload(
+    *,
+    command: str,
+    message: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="validation_error",
+        provider={"type": "henry-local-validator"},
+        error_obj={"message": message},
+        metadata=metadata,
+    )
+
+
 def read_binary_source(value: str, timeout: int) -> tuple[bytes, str]:
     if is_data_image_url(value):
         ext = value.split(";", 1)[0].split("/")[-1]
@@ -338,7 +368,11 @@ def to_data_image_url(raw: bytes, filename: str) -> str:
 def decode_data_image_url(value: str) -> tuple[bytes, str]:
     header, encoded = value.split(";base64,", 1)
     ext = header.split("/")[-1] or "bin"
-    return base64.b64decode(encoded), f"inline.{ext}"
+    try:
+        raw = base64.b64decode(encoded)
+    except binascii.Error as exc:
+        raise ValueError("Invalid inline image data. Check the base64 content.") from exc
+    return raw, f"inline.{ext}"
 
 
 def build_responses_payload(prompt: str, args: argparse.Namespace, *, edit_inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -645,7 +679,7 @@ def run_image_command_result(
             )
 
     try:
-        config = resolve_remote_config(args)
+        config = resolve_preview_config(args) if args.dry_run else resolve_remote_config(args)
     except ValueError as exc:
         return envelope(
             ok=False,
@@ -710,6 +744,42 @@ def run_image_command_result(
         source_output=source_output,
         persist_on_success=persist_on_success,
     )
+
+
+def run_image_command_payload(
+    *,
+    command: str,
+    args: argparse.Namespace,
+    out: str,
+    source_output: str | None = None,
+    persist_on_success: bool = True,
+) -> dict[str, Any]:
+    try:
+        result = run_image_command_result(
+            command=command,
+            args=args,
+            out=out,
+            source_output=source_output,
+            persist_on_success=persist_on_success,
+        )
+    except ValueError as exc:
+        result = validation_failure_payload(command=command, message=str(exc))
+    except FileNotFoundError as exc:
+        path = exc.filename or str(exc)
+        result = validation_failure_payload(command=command, message=f"Local file not found: {path}")
+
+    metadata = result.setdefault("metadata", {})
+    if "workflow" not in metadata:
+        result = attach_workflow_metadata(
+            result,
+            cache_root=SKILL_CACHE_ROOT,
+            args=args,
+            command=command,
+            out=out,
+            source_output=source_output,
+            persist_on_success=False,
+        )
+    return result
 
 
 def build_batch_task_args(args: argparse.Namespace, task: dict[str, Any], index: int) -> argparse.Namespace:
@@ -1080,7 +1150,10 @@ def command_job_list(args: argparse.Namespace) -> int:
 
 def command_job_cleanup(args: argparse.Namespace) -> int:
     jobs_path = job_root(args.jobs_dir or DEFAULT_JOBS_DIR, DEFAULT_JOBS_DIR)
-    threshold = parse_duration_seconds(args.older_than)
+    try:
+        threshold = parse_duration_seconds(args.older_than)
+    except ValueError as exc:
+        return emit(validation_failure_payload(command="henry.job.cleanup", message=str(exc)))
     removed: list[dict[str, Any]] = []
     now = time.time()
     if jobs_path.exists():
@@ -1116,6 +1189,8 @@ def iter_text_files() -> list[Path]:
     roots = [
         SKILL_ROOT / "README.md",
         SKILL_ROOT / "CHANGELOG.md",
+        SKILL_ROOT / "CONTRIBUTING.md",
+        SKILL_ROOT / "SECURITY.md",
         SKILL_ROOT / "SKILL.md",
         SKILL_ROOT / ".gitattributes",
         SKILL_ROOT / ".gitignore",
@@ -1144,15 +1219,21 @@ def missing_required_files() -> list[str]:
         SKILL_ROOT / "README.md",
         SKILL_ROOT / "CHANGELOG.md",
         SKILL_ROOT / "LICENSE",
+        SKILL_ROOT / "CONTRIBUTING.md",
+        SKILL_ROOT / "SECURITY.md",
         ENV_EXAMPLE_PATH,
         SKILL_ROOT / "SKILL.md",
         SKILL_ROOT / "docs" / "release-process.md",
         AGENT_FILE_PATH,
         SKILL_ROOT / ".github" / "workflows" / "ci.yml",
+        SKILL_ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.md",
+        SKILL_ROOT / ".github" / "ISSUE_TEMPLATE" / "feature_request.md",
+        SKILL_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         SKILL_ROOT / "references" / "api.md",
         SKILL_ROOT / "references" / "quick-card.md",
         SKILL_ROOT / "references" / "routing.md",
         SKILL_ROOT / "references" / "setup.md",
+        SKILL_ROOT / "references" / "runbooks.md",
     ]
     return [str(path.relative_to(SKILL_ROOT)) for path in required if not path.exists()]
 
@@ -1184,7 +1265,12 @@ def readme_contract_issues() -> list[str]:
     text = readme_path.read_text(encoding="utf-8")
     required_markers = (
         "## Quick Start",
+        "## First Run",
+        "## Batch",
+        "## Job Recovery",
+        "## Output Contract",
         "## Troubleshooting",
+        "workflow_profile",
         ".env.example",
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py generate",
@@ -1194,6 +1280,61 @@ def readme_contract_issues() -> list[str]:
     for marker in required_markers:
         if marker not in text:
             issues.append(f"README.md is missing expected public guidance: {marker}")
+    return issues
+
+
+def api_reference_issues() -> list[str]:
+    api_path = SKILL_ROOT / "references" / "api.md"
+    if not api_path.exists():
+        return []
+    text = api_path.read_text(encoding="utf-8")
+    required_markers = (
+        "## Stable stdout contract",
+        "`ok`",
+        "`metadata`",
+        "## Stable metadata fields",
+        "when present",
+        "`workflow_profile`",
+        "diagnostic",
+        "## Batch JSONL example",
+        "## Manifest example",
+        "## Failure example",
+    )
+    issues: list[str] = []
+    for marker in required_markers:
+        if marker not in text:
+            issues.append(f"references/api.md is missing expected contract guidance: {marker}")
+    return issues
+
+
+def maintainer_doc_issues() -> list[str]:
+    checks = (
+        (
+            SKILL_ROOT / "CONTRIBUTING.md",
+            (
+                "# Contributing",
+                "python -m pytest -q",
+                "python .\\scripts\\henry_image.py quick_validate",
+                "CHANGELOG.md",
+            ),
+        ),
+        (
+            SKILL_ROOT / "SECURITY.md",
+            (
+                "# Security Policy",
+                "Report security issues privately.",
+                "## Supported Versions",
+            ),
+        ),
+    )
+    issues: list[str] = []
+    for path, required_markers in checks:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in required_markers:
+            if marker not in text:
+                issues.append(f"{path.relative_to(SKILL_ROOT)} is missing expected maintainer guidance: {marker}")
     return issues
 
 
@@ -1230,7 +1371,7 @@ def ci_workflow_issues() -> list[str]:
         "python ./scripts/henry_image.py generate --help",
         "python ./scripts/henry_image.py quick_validate",
         "python -m pytest -q tests/test_repo_hygiene.py",
-        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py",
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py",
         "python -m pytest -q",
     )
     issues: list[str] = []
@@ -1320,6 +1461,8 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
 
     issues.extend(env_example_issues())
     issues.extend(readme_contract_issues())
+    issues.extend(api_reference_issues())
+    issues.extend(maintainer_doc_issues())
     issues.extend(version_consistency_issues())
     issues.extend(ci_workflow_issues())
     issues.extend(release_process_issues())
@@ -1373,7 +1516,12 @@ def command_probe(args: argparse.Namespace) -> int:
             out=str(Path(tmp) / "probe.png"),
             background_job=False,
         )
-        result = run_image_command_result(command="henry.probe", args=probe_args, out=probe_args.out, persist_on_success=False)
+        result = run_image_command_payload(
+            command="henry.probe",
+            args=probe_args,
+            out=probe_args.out,
+            persist_on_success=False,
+        )
         for output in result.get("outputs", []):
             path = output.get("path")
             manifest = output.get("manifest")
@@ -1427,13 +1575,13 @@ def command_prompt(args: argparse.Namespace) -> int:
 def command_generate(args: argparse.Namespace) -> int:
     if args.background_job:
         return start_background_job("generate", args)
-    return emit(run_image_command_result(command="henry.generate", args=args, out=args.out))
+    return emit(run_image_command_payload(command="henry.generate", args=args, out=args.out))
 
 
 def command_edit(args: argparse.Namespace) -> int:
     if args.background_job:
         return start_background_job("edit", args)
-    return emit(run_image_command_result(command="henry.edit", args=args, out=args.out))
+    return emit(run_image_command_payload(command="henry.edit", args=args, out=args.out))
 
 
 def command_batch(args: argparse.Namespace) -> int:
@@ -1468,6 +1616,13 @@ def command_batch(args: argparse.Namespace) -> int:
                         error_obj={"message": f"Invalid JSONL at line {line_number}: {exc}"},
                     )
                 )
+            if not isinstance(task, dict):
+                return emit(
+                    validation_failure_payload(
+                        command="henry.batch",
+                        message=f"Invalid JSONL at line {line_number}: each task must be a JSON object.",
+                    )
+                )
             tasks.append(task)
     if not tasks:
         return emit(
@@ -1485,7 +1640,7 @@ def command_batch(args: argparse.Namespace) -> int:
     for index, task in enumerate(tasks, start=1):
         task_args = build_batch_task_args(args, task, index)
         task_command = "henry.batch.edit" if task_args.image or task_args.image_file_id else "henry.batch.generate"
-        task_result = run_image_command_result(
+        task_result = run_image_command_payload(
             command=task_command,
             args=task_args,
             out=task_args.out,
