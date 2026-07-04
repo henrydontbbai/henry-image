@@ -41,7 +41,7 @@ jobs:
       - name: Install test runner
         run: python -m pip install pytest
       - name: Run contract tests
-        run: python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py
+        run: python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py
 
   test:
     runs-on: ubuntu-latest

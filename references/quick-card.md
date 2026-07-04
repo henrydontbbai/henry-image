@@ -45,3 +45,22 @@ python .\scripts\henry_image.py probe `
   --model response-model-v1 `
   --image-model image-model-v1
 ```
+
+## Batch
+
+```powershell
+python .\scripts\henry_image.py batch `
+  --route auto `
+  --model response-model-v1 `
+  --image-model image-model-v1 `
+  --batch-input ".\input\tasks.jsonl" `
+  --out-dir "output\imagegen\batch"
+```
+
+## Job Recovery
+
+```powershell
+python .\scripts\henry_image.py job-status --job ".\output\imagegen\jobs\job-123"
+python .\scripts\henry_image.py job-diagnose --job ".\output\imagegen\jobs\job-123" --format human
+python .\scripts\henry_image.py job-list
+```

@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKED_PATHS = (
     ROOT / "README.md",
     ROOT / "CHANGELOG.md",
+    ROOT / "CONTRIBUTING.md",
+    ROOT / "SECURITY.md",
     ROOT / "SKILL.md",
     ROOT / ".gitattributes",
     ROOT / ".gitignore",
@@ -73,11 +75,16 @@ def test_public_release_files_exist():
         ROOT / "README.md",
         ROOT / "CHANGELOG.md",
         ROOT / "LICENSE",
+        ROOT / "CONTRIBUTING.md",
+        ROOT / "SECURITY.md",
         ROOT / ".env.example",
         ROOT / "SKILL.md",
         ROOT / "docs" / "release-process.md",
         ROOT / "agents" / "henry-image.yaml",
         ROOT / ".github" / "workflows" / "ci.yml",
+        ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.md",
+        ROOT / ".github" / "ISSUE_TEMPLATE" / "feature_request.md",
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
     )
     missing = [str(path.relative_to(ROOT)) for path in expected if not path.exists()]
     assert not missing, "\n".join(missing)
@@ -106,7 +113,12 @@ def test_readme_includes_minimal_quickstart_and_troubleshooting():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     for expected in (
         "## Quick Start",
+        "## First Run",
+        "## Batch",
+        "## Job Recovery",
+        "## Output Contract",
         "## Troubleshooting",
+        "workflow_profile",
         "docs/release-process.md",
         ".env.example",
         "python -m pytest -q",
@@ -144,10 +156,45 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
         "python ./scripts/henry_image.py generate --help",
         "python ./scripts/henry_image.py quick_validate",
         "python -m pytest -q tests/test_repo_hygiene.py",
-        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py",
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py",
         "python -m pytest -q",
     ):
         assert expected in text
+
+
+def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
+    text = (ROOT / "references" / "api.md").read_text(encoding="utf-8")
+    for expected in (
+        "## Stable stdout contract",
+        "`ok`",
+        "`metadata`",
+        "## Stable metadata fields",
+        "when present",
+        "`workflow_profile`",
+        "diagnostic",
+        "## Batch JSONL example",
+        "## Manifest example",
+        "## Failure example",
+    ):
+        assert expected in text
+
+
+def test_maintainer_docs_cover_local_checks_and_private_reporting():
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    for expected in (
+        "# Contributing",
+        "python -m pytest -q",
+        "python .\\scripts\\henry_image.py quick_validate",
+        "CHANGELOG.md",
+    ):
+        assert expected in contributing
+    for expected in (
+        "# Security Policy",
+        "Report security issues privately.",
+        "## Supported Versions",
+    ):
+        assert expected in security
 
 
 def test_release_process_doc_defines_version_rules_and_tag_policy():

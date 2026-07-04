@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5 - 2026-07-04
+
+- return structured `validation_error` output for local prompt and argument failures instead of Python tracebacks
+- lock `auto` fallback behavior with contract tests for retryable and non-retryable categories
+- add request-layer regression coverage for transport wrapping and failure classification
+- clarify the public output contract, including stable metadata fields and the diagnostic status of `workflow_profile`
+- expand public docs for first run, batch input, job recovery, and upstream timeout handling
+- add maintainer-facing `CONTRIBUTING.md`, `SECURITY.md`, and minimal issue / pull request templates
+
 ## 0.2.1 - 2026-07-04
 
 - convert remote request timeouts into structured CLI errors instead of Python tracebacks
