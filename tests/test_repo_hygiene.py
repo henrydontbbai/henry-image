@@ -174,6 +174,18 @@ def test_ci_workflow_includes_windows_runtime_coverage():
         assert expected in text
 
 
+def test_ci_workflow_includes_ubuntu_runtime_coverage():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for expected in (
+        "smoke:",
+        "hygiene:",
+        "contract:",
+        "test:",
+        "runs-on: ubuntu-latest",
+    ):
+        assert expected in text
+
+
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
     text = (ROOT / "references" / "api.md").read_text(encoding="utf-8")
     for expected in (
@@ -216,10 +228,17 @@ def test_release_process_doc_defines_version_rules_and_tag_policy():
         "Patch",
         "Minor",
         "Major",
+        "test-only",
+        "CI-only",
+        "docs-only",
         "vX.Y.Z",
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py quick_validate",
         "OpenCode",
+        "Ubuntu",
+        "Windows",
+        "transport",
+        "does not block",
         "git tag",
         "GitHub Release",
         "optional",

@@ -17,8 +17,10 @@ python .\scripts\henry_image.py quick_validate
 - update `CHANGELOG.md` when user-visible behavior changes
 - keep documentation and examples aligned with the shipped CLI
 - prefer small, focused pull requests over broad refactors
+- say in the PR description whether the change needs a release; test-only, CI-only, and docs-only maintenance PRs normally do not
 
 ## Versioning Notes
 
 - update `scripts/henry_image.py`, `README.md`, `SKILL.md`, and `CHANGELOG.md` together when the version changes
 - use `docs/release-process.md` for release checks and tag creation
+- do not bump the version for maintenance-only PRs unless shipped user-visible behavior or the public contract changed
