@@ -162,6 +162,18 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
         assert expected in text
 
 
+def test_ci_workflow_includes_windows_runtime_coverage():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for expected in (
+        "windows:",
+        "runs-on: windows-latest",
+        'python-version: "3.12"',
+        "python .\\scripts\\henry_image.py quick_validate",
+        "python -m pytest -q",
+    ):
+        assert expected in text
+
+
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
     text = (ROOT / "references" / "api.md").read_text(encoding="utf-8")
     for expected in (

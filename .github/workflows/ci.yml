@@ -43,6 +43,20 @@ jobs:
       - name: Run contract tests
         run: python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test runner
+        run: python -m pip install pytest
+      - name: Run pytest
+        run: python -m pytest -q
+      - name: Run quick validation
+        run: python .\scripts\henry_image.py quick_validate
+
   test:
     runs-on: ubuntu-latest
     strategy:
