@@ -129,6 +129,25 @@ def test_public_version_markers_are_in_sync():
     assert f"## {version} -" in changelog_text
 
 
+def test_ci_workflow_has_layered_jobs_and_python_matrix():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for expected in (
+        "smoke:",
+        "hygiene:",
+        "contract:",
+        "test:",
+        "matrix:",
+        'python-version: ["3.11", "3.12"]',
+        "python ./scripts/henry_image.py --help",
+        "python ./scripts/henry_image.py generate --help",
+        "python ./scripts/henry_image.py quick_validate",
+        "python -m pytest -q tests/test_repo_hygiene.py",
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py",
+        "python -m pytest -q",
+    ):
+        assert expected in text
+
+
 def test_committed_text_files_do_not_embed_disallowed_external_names():
     offenders = []
     for path in iter_text_files():

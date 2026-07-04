@@ -1179,6 +1179,32 @@ def version_consistency_issues() -> list[str]:
     return issues
 
 
+def ci_workflow_issues() -> list[str]:
+    ci_path = SKILL_ROOT / ".github" / "workflows" / "ci.yml"
+    if not ci_path.exists():
+        return []
+    text = ci_path.read_text(encoding="utf-8")
+    required_markers = (
+        "smoke:",
+        "hygiene:",
+        "contract:",
+        "test:",
+        "matrix:",
+        'python-version: ["3.11", "3.12"]',
+        "python ./scripts/henry_image.py --help",
+        "python ./scripts/henry_image.py generate --help",
+        "python ./scripts/henry_image.py quick_validate",
+        "python -m pytest -q tests/test_repo_hygiene.py",
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py",
+        "python -m pytest -q",
+    )
+    issues: list[str] = []
+    for marker in required_markers:
+        if marker not in text:
+            issues.append(f".github/workflows/ci.yml is missing expected CI marker: {marker}")
+    return issues
+
+
 def disallowed_marker_issues() -> list[str]:
     issues: list[str] = []
     for path in iter_text_files():
@@ -1235,6 +1261,7 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
     issues.extend(env_example_issues())
     issues.extend(readme_contract_issues())
     issues.extend(version_consistency_issues())
+    issues.extend(ci_workflow_issues())
     issues.extend(disallowed_marker_issues())
     payload = envelope(
         ok=not issues,
