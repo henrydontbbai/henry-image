@@ -58,6 +58,7 @@ DEFAULT_INTERVAL = 5.0
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 SKILL_CACHE_ROOT = SKILL_ROOT / ".cache"
 AGENT_FILE_PATH = SKILL_ROOT / "agents" / "henry-image.yaml"
+ENV_EXAMPLE_PATH = SKILL_ROOT / ".env.example"
 
 QUALITIES = {"low", "medium", "high", "auto", "standard", "hd"}
 OUTPUT_FORMATS = {"png", "jpeg", "webp"}
@@ -100,6 +101,8 @@ SECRET_PATTERNS = [
     re.compile(r"(?<![A-Za-z0-9])sk-[^\s\"'<>]+"),
 ]
 TEXT_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".json", ".txt"}
+
+
 def removed_marker(*parts: str) -> str:
     return "".join(parts)
 
@@ -1107,6 +1110,7 @@ def missing_required_files() -> list[str]:
         SKILL_ROOT / "README.md",
         SKILL_ROOT / "CHANGELOG.md",
         SKILL_ROOT / "LICENSE",
+        ENV_EXAMPLE_PATH,
         SKILL_ROOT / "SKILL.md",
         AGENT_FILE_PATH,
         SKILL_ROOT / ".github" / "workflows" / "ci.yml",
@@ -1116,6 +1120,63 @@ def missing_required_files() -> list[str]:
         SKILL_ROOT / "references" / "setup.md",
     ]
     return [str(path.relative_to(SKILL_ROOT)) for path in required if not path.exists()]
+
+
+def env_example_issues() -> list[str]:
+    if not ENV_EXAMPLE_PATH.exists():
+        return []
+    expected_keys = [
+        "HENRY_IMAGE_BASE_URL",
+        "HENRY_IMAGE_API_KEY",
+        "HENRY_IMAGE_MODEL",
+        "HENRY_IMAGE_IMAGE_MODEL",
+    ]
+    found_keys: list[str] = []
+    for line in ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        found_keys.append(stripped.split("=", 1)[0].strip())
+    if found_keys != expected_keys:
+        return [".env.example must expose only the four canonical Henry Image variables in order."]
+    return []
+
+
+def readme_contract_issues() -> list[str]:
+    readme_path = SKILL_ROOT / "README.md"
+    if not readme_path.exists():
+        return []
+    text = readme_path.read_text(encoding="utf-8")
+    required_markers = (
+        "## Quick Start",
+        "## Troubleshooting",
+        ".env.example",
+        "python -m pytest -q",
+        "python .\\scripts\\henry_image.py generate",
+        "python .\\scripts\\henry_image.py quick_validate",
+    )
+    issues: list[str] = []
+    for marker in required_markers:
+        if marker not in text:
+            issues.append(f"README.md is missing expected public guidance: {marker}")
+    return issues
+
+
+def version_consistency_issues() -> list[str]:
+    script_version = HENRY_IMAGE_VERSION
+    checks = (
+        (SKILL_ROOT / "README.md", f"Version: `{script_version}`"),
+        (SKILL_ROOT / "SKILL.md", f"V{script_version}"),
+        (SKILL_ROOT / "CHANGELOG.md", f"## {script_version} -"),
+    )
+    issues: list[str] = []
+    for path, marker in checks:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if marker not in text:
+            issues.append(f"{path.relative_to(SKILL_ROOT)} is missing version marker: {marker}")
+    return issues
 
 
 def disallowed_marker_issues() -> list[str]:
@@ -1171,6 +1232,9 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
     if ("candidate-" + "policy") in generate_help.stdout:
         issues.append("Removed flag still appears in generate help.")
 
+    issues.extend(env_example_issues())
+    issues.extend(readme_contract_issues())
+    issues.extend(version_consistency_issues())
     issues.extend(disallowed_marker_issues())
     payload = envelope(
         ok=not issues,

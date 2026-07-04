@@ -22,6 +22,38 @@ Only these public environment variables are supported:
 - `HENRY_IMAGE_MODEL`
 - `HENRY_IMAGE_IMAGE_MODEL`
 
+Example values are shown in `.env.example`.
+
+## Quick Start
+
+1. Set the four public `HENRY_IMAGE_*` variables in your shell or local secret manager.
+2. Run a dry run to confirm the route and auth sources are visible.
+3. Run a real `generate` command once the dry run looks correct.
+
+Dry run:
+
+```powershell
+python .\scripts\henry_image.py generate `
+  --dry-run `
+  --route auto `
+  --model response-model-v1 `
+  --image-model image-model-v1 `
+  --prompt "Connectivity dry run" `
+  --out "output\imagegen\dry-run.png"
+```
+
+Generate:
+
+```powershell
+python .\scripts\henry_image.py generate `
+  --route responses `
+  --model response-model-v1 `
+  --image-model image-model-v1 `
+  --prompt "A clean product photo of a ceramic cup" `
+  --out "output\imagegen\cup.png" `
+  --force
+```
+
 ## Main commands
 
 ```text
@@ -44,6 +76,13 @@ quick_validate
 python -m pytest -q
 python .\scripts\henry_image.py quick_validate
 ```
+
+## Troubleshooting
+
+- Missing configuration: confirm all four `HENRY_IMAGE_*` variables are set in the current process.
+- Route validation error: use `--model` for `responses`, `--image-model` for `images`, and both for `auto`.
+- Readiness check: run `python .\scripts\henry_image.py probe --route auto --model response-model-v1 --image-model image-model-v1`
+- Repository health: rerun `python .\scripts\henry_image.py quick_validate`
 
 ## Layout
 

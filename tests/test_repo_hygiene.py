@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,12 +73,60 @@ def test_public_release_files_exist():
         ROOT / "README.md",
         ROOT / "CHANGELOG.md",
         ROOT / "LICENSE",
+        ROOT / ".env.example",
         ROOT / "SKILL.md",
         ROOT / "agents" / "henry-image.yaml",
         ROOT / ".github" / "workflows" / "ci.yml",
     )
     missing = [str(path.relative_to(ROOT)) for path in expected if not path.exists()]
     assert not missing, "\n".join(missing)
+
+
+def test_env_example_only_exposes_canonical_public_variables():
+    env_example = ROOT / ".env.example"
+    text = env_example.read_text(encoding="utf-8")
+    keys = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" in stripped:
+            keys.append(stripped.split("=", 1)[0].strip())
+
+    assert keys == [
+        "HENRY_IMAGE_BASE_URL",
+        "HENRY_IMAGE_API_KEY",
+        "HENRY_IMAGE_MODEL",
+        "HENRY_IMAGE_IMAGE_MODEL",
+    ]
+
+
+def test_readme_includes_minimal_quickstart_and_troubleshooting():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for expected in (
+        "## Quick Start",
+        "## Troubleshooting",
+        ".env.example",
+        "python -m pytest -q",
+        "python .\\scripts\\henry_image.py generate",
+        "python .\\scripts\\henry_image.py quick_validate",
+    ):
+        assert expected in text
+
+
+def test_public_version_markers_are_in_sync():
+    script_text = (ROOT / "scripts" / "henry_image.py").read_text(encoding="utf-8")
+    readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+    skill_text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    version_match = re.search(r'HENRY_IMAGE_VERSION = "([^"]+)"', script_text)
+    assert version_match
+    version = version_match.group(1)
+
+    assert f"Version: `{version}`" in readme_text
+    assert f"V{version}" in skill_text
+    assert f"## {version} -" in changelog_text
 
 
 def test_committed_text_files_do_not_embed_disallowed_external_names():
