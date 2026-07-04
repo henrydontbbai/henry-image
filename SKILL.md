@@ -1,9 +1,9 @@
 ---
 name: henry-image
-description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V0.2.5. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
+description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V0.2.6. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
 ---
 
-# Henry Image V0.2.5
+# Henry Image V0.2.6
 
 ## Purpose
 

@@ -48,7 +48,7 @@ from henry_image_core.validate import read_prompt, validate_common
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "0.2.5"
+HENRY_IMAGE_VERSION = "0.2.6"
 HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
