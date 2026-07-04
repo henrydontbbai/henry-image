@@ -288,6 +288,20 @@ def resolve_remote_config(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def resolve_preview_config(args: argparse.Namespace) -> dict[str, str]:
+    apply_model_env_defaults(args)
+    base_url, base_url_source = resolve_base_url(getattr(args, "base_url", None))
+    if not base_url:
+        raise ValueError("base-url is required. Use --base-url or set HENRY_IMAGE_BASE_URL.")
+    validate_route_requirements(args)
+    return {
+        "base_url": base_url,
+        "base_url_source": base_url_source or "cli",
+        "api_key": "",
+        "auth_source": "not_required_for_dry_run",
+    }
+
+
 def route_metadata(config: dict[str, str], route: str) -> dict[str, Any]:
     return {
         "route": route,
@@ -665,7 +679,7 @@ def run_image_command_result(
             )
 
     try:
-        config = resolve_remote_config(args)
+        config = resolve_preview_config(args) if args.dry_run else resolve_remote_config(args)
     except ValueError as exc:
         return envelope(
             ok=False,
