@@ -95,7 +95,7 @@ def decode_image_b64(value: str) -> bytes:
     if value.startswith("data:image/") and ";base64," in value:
         value = value.split(";base64,", 1)[1]
     try:
-        return base64.b64decode(value)
+        return base64.b64decode("".join(value.split()), validate=True)
     except binascii.Error as exc:
         raise ValueError("Invalid inline image data. Check the base64 content.") from exc
 

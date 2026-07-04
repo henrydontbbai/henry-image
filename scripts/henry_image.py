@@ -35,6 +35,7 @@ from henry_image_core.prompts import build_prompt_package_v2, compile_prompt_tas
 from henry_image_core.request import (
     NetworkOperationError,
     classify_api_failure,
+    decode_image_b64,
     extract_images_api_images,
     extract_response_images,
     failure_error_obj,
@@ -47,7 +48,7 @@ from henry_image_core.validate import read_prompt, validate_common
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "0.2.5"
+HENRY_IMAGE_VERSION = "0.2.6"
 HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
@@ -345,6 +346,28 @@ def validation_failure_payload(
     )
 
 
+def remote_image_data_failure_payload(
+    *,
+    command: str,
+    provider: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="validation_error",
+        provider=provider,
+        error_obj={
+            "code": "invalid_image_data",
+            "message": "Remote service returned invalid image data.",
+            "category": "validation_error",
+        },
+        metadata=metadata,
+        request_id=request_id,
+    )
+
+
 def read_binary_source(value: str, timeout: int) -> tuple[bytes, str]:
     if is_data_image_url(value):
         ext = value.split(";", 1)[0].split("/")[-1]
@@ -554,8 +577,17 @@ def attempt_route(
                 metadata=metadata,
                 request_id=result.request_id,
             )
+        try:
+            images_raw = [decode_image_b64(item) for item in images_b64]
+        except ValueError:
+            return remote_image_data_failure_payload(
+                command=command,
+                provider=provider,
+                metadata=metadata,
+                request_id=result.request_id,
+            )
         outputs = write_image_bytes(
-            [__import__("base64").b64decode(item) for item in images_b64],
+            images_raw,
             out,
             args.output_format,
             args.force,
@@ -600,6 +632,13 @@ def attempt_route(
                 provider=provider,
                 error_data=exc.error_data,
                 metadata=metadata,
+            )
+        except ValueError:
+            return remote_image_data_failure_payload(
+                command=command,
+                provider=provider,
+                metadata=metadata,
+                request_id=result.request_id,
             )
         if not images_raw:
             return envelope(

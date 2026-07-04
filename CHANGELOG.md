@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6 - 2026-07-04
+
+- preserve `request_id` and route metadata when remote image base64 is malformed
+- return a structured Henry `validation_error` instead of surfacing low-level decode failures
+- add a CLI contract test confirming `generate --dry-run` works without `HENRY_IMAGE_API_KEY`
+
 ## 0.2.5 - 2026-07-04
 
 - return structured `validation_error` output for local prompt and argument failures instead of Python tracebacks

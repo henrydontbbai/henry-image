@@ -2,7 +2,7 @@
 
 Henry Image is a small local image workflow project for real image delivery, prompt packaging, and job recovery.
 
-Version: `0.2.5`
+Version: `0.2.6`
 
 ## What it does
 
