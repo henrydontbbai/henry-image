@@ -392,7 +392,7 @@ def decode_data_image_url(value: str) -> tuple[bytes, str]:
     header, encoded = value.split(";base64,", 1)
     ext = header.split("/")[-1] or "bin"
     try:
-        raw = base64.b64decode(encoded)
+        raw = base64.b64decode("".join(encoded.split()), validate=True)
     except binascii.Error as exc:
         raise ValueError("Invalid inline image data. Check the base64 content.") from exc
     return raw, f"inline.{ext}"

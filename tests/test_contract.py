@@ -559,6 +559,25 @@ def test_edit_invalid_inline_data_url_returns_validation_error():
     assert "invalid inline image data" in payload["error"]["message"].lower()
 
 
+def test_edit_invalid_inline_data_url_with_invalid_characters_returns_validation_error():
+    mod = load_module()
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        image=["data:image/png;base64,@@@"],
+    )
+    stdout = io.StringIO()
+
+    with contextlib.redirect_stdout(stdout):
+        code = mod.command_edit(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "invalid inline image data" in payload["error"]["message"].lower()
+
+
 def test_generate_responses_invalid_remote_base64_returns_validation_error():
     mod = load_module()
     fake_result = mod.ApiResult(
@@ -596,6 +615,47 @@ def test_generate_responses_invalid_remote_base64_returns_validation_error():
     assert payload["request_id"] == "req-invalid-b64"
     assert payload["metadata"]["route"] == "responses"
     assert "remote service returned invalid image data" in payload["error"]["message"].lower()
+
+
+def test_generate_images_invalid_remote_b64_json_returns_validation_error():
+    mod = load_module()
+    fake_result = mod.ApiResult(
+        True,
+        200,
+        {"data": [{"b64_json": "abc"}]},
+        None,
+        "req-invalid-b64",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args = base_args(
+            route="images",
+            model="response-service",
+            image_model="image-service",
+            base_url="https://images.example/v1",
+            out=str(root / "broken.png"),
+        )
+        with patched(mod, "SKILL_CACHE_ROOT", root / ".cache"):
+            with patched(
+                mod,
+                "resolve_api_key",
+                lambda *_args, **_kwargs: ("secret-key", "HENRY_IMAGE_API_KEY"),
+            ):
+                with patched(mod, "request_json", lambda *_args, **_kwargs: fake_result):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
+
+        payload = read_payload(code, stdout.getvalue())
+        assert code == 1
+        assert payload["status"] == "validation_error"
+        assert payload["request_id"] == "req-invalid-b64"
+        assert payload["metadata"]["route"] == "images"
+        assert payload["error"]["code"] == "invalid_image_data"
+        assert "remote service returned invalid image data" in payload["error"]["message"].lower()
+        assert not (root / "broken.png").exists()
 
 
 def test_auto_route_falls_back_from_responses_to_images_for_timeout():
@@ -706,6 +766,44 @@ def test_auto_route_falls_back_for_no_image_result():
     assert code == 0
     assert payload["metadata"]["route_attempted"] == ["responses", "images"]
     assert payload["provider"]["route"] == "images"
+
+
+def test_auto_route_does_not_fall_back_for_invalid_remote_image_data():
+    mod = load_module()
+    fake_result = mod.ApiResult(
+        True,
+        200,
+        {"output": [{"type": "image_generation_call", "result": "abc"}]},
+        None,
+        "req-invalid-b64",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args = base_args(
+            route="auto",
+            model="response-service",
+            image_model="image-service",
+            base_url="https://images.example/v1",
+            out=str(root / "auto.png"),
+        )
+        with patched(mod, "SKILL_CACHE_ROOT", root / ".cache"):
+            with patched(
+                mod,
+                "resolve_api_key",
+                lambda *_args, **_kwargs: ("secret-key", "HENRY_IMAGE_API_KEY"),
+            ):
+                with patched(mod, "request_json", lambda *_args, **_kwargs: fake_result):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["metadata"]["route_attempted"] == ["responses"]
+    assert payload["request_id"] == "req-invalid-b64"
 
 
 def test_quick_validate_reports_missing_required_files():
