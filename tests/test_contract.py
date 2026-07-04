@@ -578,6 +578,46 @@ def test_edit_invalid_inline_data_url_with_invalid_characters_returns_validation
     assert "invalid inline image data" in payload["error"]["message"].lower()
 
 
+def test_edit_invalid_inline_mask_data_url_with_invalid_characters_returns_validation_error():
+    mod = load_module()
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        image=[data_url(b"source-image")],
+        mask="data:image/png;base64,@@@",
+    )
+    stdout = io.StringIO()
+
+    with contextlib.redirect_stdout(stdout):
+        code = mod.command_edit(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "invalid inline image data" in payload["error"]["message"].lower()
+
+
+def test_build_edit_inputs_accept_inline_data_urls_with_whitespace():
+    mod = load_module()
+    source_bytes = b"source-image"
+    mask_bytes = b"mask-image"
+    source_url = data_url(source_bytes)
+    mask_url = data_url(mask_bytes)
+    source_header, source_encoded = source_url.split("base64,", 1)
+    mask_header, mask_encoded = mask_url.split("base64,", 1)
+    source_with_whitespace = f"{source_header}base64,\n{source_encoded[:4]} \n{source_encoded[4:]}"
+    mask_with_whitespace = f"{mask_header}base64,\n{mask_encoded[:4]}\t{mask_encoded[4:]}"
+    args = base_args(image=[source_with_whitespace], mask=mask_with_whitespace)
+
+    response_inputs, multipart_files = mod.build_edit_inputs(args)
+
+    assert response_inputs[0]["image"] == source_with_whitespace
+    assert any(item.get("role") == "mask" and item["image"] == mask_with_whitespace for item in response_inputs)
+    assert ("image", "inline.png", source_bytes) in multipart_files
+    assert ("mask", "inline.png", mask_bytes) in multipart_files
+
+
 def test_generate_responses_invalid_remote_base64_returns_validation_error():
     mod = load_module()
     fake_result = mod.ApiResult(
