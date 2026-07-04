@@ -1112,6 +1112,7 @@ def missing_required_files() -> list[str]:
         SKILL_ROOT / "LICENSE",
         ENV_EXAMPLE_PATH,
         SKILL_ROOT / "SKILL.md",
+        SKILL_ROOT / "docs" / "release-process.md",
         AGENT_FILE_PATH,
         SKILL_ROOT / ".github" / "workflows" / "ci.yml",
         SKILL_ROOT / "references" / "api.md",
@@ -1205,6 +1206,31 @@ def ci_workflow_issues() -> list[str]:
     return issues
 
 
+def release_process_issues() -> list[str]:
+    release_doc = SKILL_ROOT / "docs" / "release-process.md"
+    if not release_doc.exists():
+        return []
+    text = release_doc.read_text(encoding="utf-8")
+    required_markers = (
+        "# Release Process",
+        "Patch",
+        "Minor",
+        "Major",
+        "vX.Y.Z",
+        "python -m pytest -q",
+        "python .\\scripts\\henry_image.py quick_validate",
+        "OpenCode",
+        "git tag",
+        "GitHub Release",
+        "optional",
+    )
+    issues: list[str] = []
+    for marker in required_markers:
+        if marker not in text:
+            issues.append(f"docs/release-process.md is missing expected release guidance: {marker}")
+    return issues
+
+
 def disallowed_marker_issues() -> list[str]:
     issues: list[str] = []
     for path in iter_text_files():
@@ -1262,6 +1288,7 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
     issues.extend(readme_contract_issues())
     issues.extend(version_consistency_issues())
     issues.extend(ci_workflow_issues())
+    issues.extend(release_process_issues())
     issues.extend(disallowed_marker_issues())
     payload = envelope(
         ok=not issues,

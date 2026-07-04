@@ -75,6 +75,7 @@ def test_public_release_files_exist():
         ROOT / "LICENSE",
         ROOT / ".env.example",
         ROOT / "SKILL.md",
+        ROOT / "docs" / "release-process.md",
         ROOT / "agents" / "henry-image.yaml",
         ROOT / ".github" / "workflows" / "ci.yml",
     )
@@ -106,6 +107,7 @@ def test_readme_includes_minimal_quickstart_and_troubleshooting():
     for expected in (
         "## Quick Start",
         "## Troubleshooting",
+        "docs/release-process.md",
         ".env.example",
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py generate",
@@ -144,6 +146,24 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
         "python -m pytest -q tests/test_repo_hygiene.py",
         "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_workflow_profile.py",
         "python -m pytest -q",
+    ):
+        assert expected in text
+
+
+def test_release_process_doc_defines_version_rules_and_tag_policy():
+    text = (ROOT / "docs" / "release-process.md").read_text(encoding="utf-8")
+    for expected in (
+        "# Release Process",
+        "Patch",
+        "Minor",
+        "Major",
+        "vX.Y.Z",
+        "python -m pytest -q",
+        "python .\\scripts\\henry_image.py quick_validate",
+        "OpenCode",
+        "git tag",
+        "GitHub Release",
+        "optional",
     ):
         assert expected in text
 

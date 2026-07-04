@@ -84,6 +84,10 @@ python .\scripts\henry_image.py quick_validate
 - Readiness check: run `python .\scripts\henry_image.py probe --route auto --model response-model-v1 --image-model image-model-v1`
 - Repository health: rerun `python .\scripts\henry_image.py quick_validate`
 
+## Release Process
+
+Maintainers should follow `docs/release-process.md` for version rules, verification, OpenCode review, and tag creation.
+
 ## Layout
 
 - `SKILL.md` - behavior and routing notes

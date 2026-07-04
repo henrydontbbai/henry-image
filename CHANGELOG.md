@@ -7,4 +7,6 @@
 - removed retired public commands and flags
 - renamed the local agent file to `agents/henry-image.yaml`
 - refreshed docs for a Henry-only public surface
-- added MIT license and minimal CI
+- added MIT license, `.env.example`, and public quickstart guidance
+- strengthened CI with layered jobs and a Python `3.11` / `3.12` matrix
+- added release-process documentation and local release checks
