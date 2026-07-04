@@ -14,6 +14,17 @@ GitHub Release pages are optional. Do not create one unless release notes, asset
 - Minor: backward-compatible CLI or workflow additions that expand the public surface
 - Major: breaking changes to public commands, public environment variables, output contracts, or route behavior
 
+## Maintenance-Only Changes
+
+These changes do not require a version bump, release tag, or new `CHANGELOG.md` release entry by default:
+
+- test-only changes
+- CI-only changes
+- docs-only changes
+- other internal maintenance that does not change user-visible behavior or the public Henry contract
+
+Create or update a release only when the shipped behavior, public interface, output contract, or supported operating flow has changed.
+
 ## Release Checklist
 
 1. Confirm the repo version is correct in `scripts/henry_image.py`, `README.md`, `SKILL.md`, and `CHANGELOG.md`
@@ -24,10 +35,12 @@ python -m pytest -q
 python .\scripts\henry_image.py quick_validate
 ```
 
-3. Sync an audit worktree and ask OpenCode for a blocker review
-4. Update `CHANGELOG.md` so the release entry matches the current shipped state
-5. Commit the final release-ready state
-6. Create the release tag:
+3. Confirm GitHub Actions is green for both the Ubuntu jobs and the Windows job
+4. Sync an audit worktree and ask OpenCode for a blocker review
+5. If OpenCode fails because of transport or tool availability, record that the attempt was made; a transport failure does not block a maintenance-only PR when local checks, audit worktree checks, and GitHub CI are all green
+6. Update `CHANGELOG.md` so the release entry matches the current shipped state
+7. Commit the final release-ready state
+8. Create the release tag:
 
 ```powershell
 git tag -a vX.Y.Z -m "Henry Image vX.Y.Z"
