@@ -559,6 +559,44 @@ def test_edit_invalid_inline_data_url_returns_validation_error():
     assert "invalid inline image data" in payload["error"]["message"].lower()
 
 
+def test_generate_responses_invalid_remote_base64_returns_validation_error():
+    mod = load_module()
+    fake_result = mod.ApiResult(
+        True,
+        200,
+        {"output": [{"type": "image_generation_call", "result": "abc"}]},
+        None,
+        "req-invalid-b64",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args = base_args(
+            route="responses",
+            model="response-service",
+            image_model="image-service",
+            out=str(root / "broken.png"),
+        )
+        with patched(mod, "SKILL_CACHE_ROOT", root / ".cache"):
+            with patched(
+                mod,
+                "resolve_api_key",
+                lambda *_args, **_kwargs: ("secret-key", "HENRY_IMAGE_API_KEY"),
+            ):
+                with patched(mod, "request_json", lambda *_args, **_kwargs: fake_result):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["request_id"] == "req-invalid-b64"
+    assert payload["metadata"]["route"] == "responses"
+    assert "remote service returned invalid image data" in payload["error"]["message"].lower()
+
+
 def test_auto_route_falls_back_from_responses_to_images_for_timeout():
     mod = load_module()
     stdout = io.StringIO()
@@ -761,3 +799,30 @@ def test_quick_validate_passes_for_the_repo():
         payload = json.loads(proc.stdout)
         assert payload["status"] == "completed"
         assert payload["outputs"][0]["issues"] == []
+
+
+def test_generate_dry_run_cli_does_not_require_api_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        proc = run_cli(
+            [
+                "generate",
+                "--route",
+                "responses",
+                "--model",
+                "response-service",
+                "--base-url",
+                "https://images.example/v1",
+                "--prompt",
+                "A clean product photo of a ceramic cup",
+                "--dry-run",
+                "--out",
+                str(root / "preview.png"),
+            ],
+            root,
+            env={"HENRY_IMAGE_API_KEY": ""},
+        )
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        payload = json.loads(proc.stdout)
+        assert payload["status"] == "dry_run"
+        assert payload["metadata"]["auth_source"] == "not_required_for_dry_run"
