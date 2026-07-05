@@ -70,6 +70,15 @@ def iter_text_files():
                 yield candidate
 
 
+def workflow_job_block(workflow_text: str, job_name: str) -> str:
+    pattern = re.compile(
+        rf"(?ms)^  {re.escape(job_name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)"
+    )
+    match = pattern.search(workflow_text)
+    assert match, f"missing workflow job block: {job_name}"
+    return match.group(0)
+
+
 def test_public_release_files_exist():
     expected = (
         ROOT / "README.md",
@@ -161,29 +170,49 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
     ):
         assert expected in text
 
+    smoke = workflow_job_block(text, "smoke")
+    hygiene = workflow_job_block(text, "hygiene")
+    contract = workflow_job_block(text, "contract")
+    test = workflow_job_block(text, "test")
+
+    assert "runs-on: ubuntu-latest" in smoke
+    assert "python ./scripts/henry_image.py --help" in smoke
+    assert "python ./scripts/henry_image.py generate --help" in smoke
+    assert "python ./scripts/henry_image.py quick_validate" in smoke
+
+    assert "runs-on: ubuntu-latest" in hygiene
+    assert "python -m pytest -q tests/test_repo_hygiene.py" in hygiene
+
+    assert "runs-on: ubuntu-latest" in contract
+    assert (
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py "
+        "tests/test_request_layer.py tests/test_workflow_profile.py"
+    ) in contract
+
+    assert "runs-on: ubuntu-latest" in test
+    assert "matrix:" in test
+    assert 'python-version: ["3.11", "3.12"]' in test
+    assert "python -m pytest -q" in test
+
 
 def test_ci_workflow_includes_windows_runtime_coverage():
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    block = workflow_job_block(text, "windows")
+
     for expected in (
-        "windows:",
         "runs-on: windows-latest",
         'python-version: "3.12"',
         "python .\\scripts\\henry_image.py quick_validate",
         "python -m pytest -q",
     ):
-        assert expected in text
+        assert expected in block
 
 
 def test_ci_workflow_includes_ubuntu_runtime_coverage():
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for expected in (
-        "smoke:",
-        "hygiene:",
-        "contract:",
-        "test:",
-        "runs-on: ubuntu-latest",
-    ):
-        assert expected in text
+    for job_name in ("smoke", "hygiene", "contract", "test"):
+        block = workflow_job_block(text, job_name)
+        assert "runs-on: ubuntu-latest" in block
 
 
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
