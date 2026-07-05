@@ -61,6 +61,16 @@ Validation failures may emit only partial metadata such as `workflow`, `replay_c
 
 `workflow_profile` may still appear in `metadata`, but it is diagnostic information and is not a compatibility promise.
 
+## Active advanced images options
+
+The only public route-specific advanced images options are:
+
+- `--images-response-format`
+- `--output-compression`
+
+These options only affect requests sent through the `images` route.
+`--output-compression` applies only to `jpeg` or `webp` output there.
+
 ## Output files
 
 Successful image runs write:

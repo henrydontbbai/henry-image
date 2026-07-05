@@ -37,10 +37,6 @@ def validate_common(
     qualities: set[str],
     output_formats: set[str],
     image_response_formats: set[str],
-    image_compat_modes: set[str],
-    input_fidelities: set[str],
-    backgrounds: set[str],
-    moderations: set[str],
     routes: set[str],
 ) -> None:
     parsed_size = parse_size(args.size)
@@ -56,24 +52,12 @@ def validate_common(
         raise ValueError("output-format must be png, jpeg, or webp.")
     if args.images_response_format not in image_response_formats:
         raise ValueError("images-response-format must be auto, b64_json, or url.")
-    if args.images_compat not in image_compat_modes:
-        raise ValueError("images-compat must be auto or minimal.")
-    if args.input_fidelity not in input_fidelities:
-        raise ValueError("input-fidelity must be auto, high, or low.")
-    if args.background not in backgrounds:
-        raise ValueError("background must be auto, opaque, or transparent.")
-    if args.moderation not in moderations:
-        raise ValueError("moderation must be auto or low.")
-    if args.partial_images < 0 or args.partial_images > 3:
-        raise ValueError("partial-images must be between 0 and 3.")
     if args.route not in routes:
         raise ValueError("route must be one of auto, responses, or images.")
     if args.n < 1 or args.n > 10:
         raise ValueError("n must be between 1 and 10.")
     if args.timeout < 1:
         raise ValueError("timeout must be at least 1 second.")
-    if args.retries < 0:
-        raise ValueError("retries must be >= 0.")
     if args.output_compression is not None:
         if args.output_format == "png":
             raise ValueError("output-compression only applies to jpeg or webp.")

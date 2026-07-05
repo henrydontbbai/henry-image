@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0 - 2026-07-05
+
+- remove low-value public CLI tuning flags: `--images-compat`, `--input-fidelity`, `--background`, `--moderation`, `--partial-images`, and `--retries`
+- keep `--images-response-format` and `--output-compression` as the remaining public route-specific advanced images options
+- update public docs and local validation so help output, references, and repository checks match the `1.0.0` CLI surface
+
 ## 0.2.6 - 2026-07-04
 
 - preserve `request_id` and route metadata when remote image base64 is malformed

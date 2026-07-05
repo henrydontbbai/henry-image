@@ -33,14 +33,8 @@ def base_args(**overrides):
         n=1,
         output_format="png",
         images_response_format="auto",
-        images_compat="auto",
-        input_fidelity="auto",
         output_compression=None,
-        background="auto",
-        moderation="auto",
-        partial_images=0,
         timeout=5,
-        retries=0,
         dry_run=False,
         force=True,
         out="output/imagegen/test.png",
@@ -160,6 +154,14 @@ def test_explicit_api_key_env_overrides_default_henry_key():
 
 
 def test_removed_public_commands_and_flags_are_hidden():
+    removed_help_markers = (
+        "--images-compat {",
+        "--input-fidelity {",
+        "--background {",
+        "--moderation {",
+        "--partial-images PARTIAL_IMAGES",
+        "--retries RETRIES",
+    )
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         top = run_cli(["--help"], root)
@@ -170,6 +172,32 @@ def test_removed_public_commands_and_flags_are_hidden():
         gen = run_cli(["generate", "--help"], root)
         assert gen.returncode == 0, gen.stderr + gen.stdout
         assert "--" + marker("candidate-", "policy") not in gen.stdout
+        for marker_text in removed_help_markers:
+            assert marker_text not in gen.stdout
+
+        probe = run_cli(["probe", "--help"], root)
+        assert probe.returncode == 0, probe.stderr + probe.stdout
+        for marker_text in removed_help_markers:
+            assert marker_text not in probe.stdout
+
+
+def test_removed_advanced_flags_are_rejected_by_generate_cli():
+    removed_flags = {
+        "--images-compat": "auto",
+        "--input-fidelity": "auto",
+        "--background": "auto",
+        "--moderation": "auto",
+        "--partial-images": "0",
+        "--retries": "0",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for flag, value in removed_flags.items():
+            proc = run_cli(["generate", flag, value], root)
+            assert proc.returncode != 0, proc.stdout
+            assert "unrecognized arguments" in proc.stderr.lower()
+            assert flag in proc.stderr
 
 
 def test_prompt_package_is_generic_only():
@@ -211,6 +239,31 @@ def test_build_edit_inputs_decode_inline_data_urls_for_multipart_uploads():
     assert any(item.get("role") == "mask" and item["image"] == mask_url for item in response_inputs)
     assert ("image", "inline.png", source_bytes) in multipart_files
     assert ("mask", "inline.png", mask_bytes) in multipart_files
+
+
+def test_build_images_payload_keeps_only_supported_advanced_images_options():
+    mod = load_module()
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        output_format="jpeg",
+        images_response_format="url",
+        output_compression=85,
+    )
+
+    payload = mod.build_images_payload(args.prompt, args)
+
+    assert payload["response_format"] == "url"
+    assert payload["output_compression"] == 85
+    for removed_field in (
+        "images_compat",
+        "input_fidelity",
+        "background",
+        "moderation",
+        "partial_images",
+        "retries",
+    ):
+        assert removed_field not in payload
 
 
 def test_probe_live_timeout_returns_structured_error_instead_of_traceback():
@@ -869,8 +922,24 @@ def test_quick_validate_reports_removed_help_markers():
     stdout = io.StringIO()
 
     def fake_subprocess_run(argv, **_kwargs):
+        removed = " ".join(
+            [
+                "--images-compat {auto,minimal}",
+                "--input-fidelity {auto,high,low}",
+                "--background {auto,opaque,transparent}",
+                "--moderation {auto,low}",
+                "--partial-images PARTIAL_IMAGES",
+                "--retries RETRIES",
+            ]
+        )
         if "generate" in argv:
-            return argparse.Namespace(returncode=0, stdout="--" + marker("candidate-", "policy"), stderr="")
+            return argparse.Namespace(
+                returncode=0,
+                stdout="--" + marker("candidate-", "policy") + " " + removed,
+                stderr="",
+            )
+        if "probe" in argv:
+            return argparse.Namespace(returncode=0, stdout=removed, stderr="")
         return argparse.Namespace(returncode=0, stdout=marker("probe-image-", "providers"), stderr="")
 
     with patched(mod, "missing_required_files", lambda: []):
@@ -890,6 +959,7 @@ def test_quick_validate_reports_removed_help_markers():
     issues = payload["outputs"][0]["issues"]
     assert any("Removed command still appears in top-level help" in item for item in issues)
     assert any("Removed flag still appears in generate help" in item for item in issues)
+    assert any("Removed flag still appears in probe help" in item for item in issues)
 
 
 def test_quick_validate_reports_disallowed_marker_issue():
