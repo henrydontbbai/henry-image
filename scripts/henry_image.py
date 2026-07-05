@@ -48,7 +48,7 @@ from henry_image_core.validate import read_prompt, validate_common
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "0.2.6"
+HENRY_IMAGE_VERSION = "1.0.0"
 HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
@@ -66,10 +66,6 @@ ENV_EXAMPLE_PATH = SKILL_ROOT / ".env.example"
 QUALITIES = {"low", "medium", "high", "auto", "standard", "hd"}
 OUTPUT_FORMATS = {"png", "jpeg", "webp"}
 IMAGE_RESPONSE_FORMATS = {"auto", "b64_json", "url"}
-IMAGE_COMPAT_MODES = {"auto", "minimal"}
-INPUT_FIDELITIES = {"auto", "high", "low"}
-BACKGROUNDS = {"auto", "opaque", "transparent"}
-MODERATIONS = {"auto", "low"}
 ROUTES = {"auto", "responses", "images"}
 PROMPT_PACKAGE_VERSIONS = {"generic"}
 PROMPT_PLATFORMS = {"generic"}
@@ -103,6 +99,14 @@ SECRET_PATTERNS = [
     re.compile(r"(?<![A-Za-z0-9])sk-[^\s\"'<>]+"),
 ]
 TEXT_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".json", ".txt"}
+REMOVED_ADVANCED_HELP_MARKERS = (
+    "--images-compat {",
+    "--input-fidelity {",
+    "--background {",
+    "--moderation {",
+    "--partial-images PARTIAL_IMAGES",
+    "--retries RETRIES",
+)
 
 
 def removed_marker(*parts: str) -> str:
@@ -689,10 +693,6 @@ def run_image_command_result(
         qualities=QUALITIES,
         output_formats=OUTPUT_FORMATS,
         image_response_formats=IMAGE_RESPONSE_FORMATS,
-        image_compat_modes=IMAGE_COMPAT_MODES,
-        input_fidelities=INPUT_FIDELITIES,
-        backgrounds=BACKGROUNDS,
-        moderations=MODERATIONS,
         routes=ROUTES,
     )
     prompt = read_prompt(args.prompt, args.prompt_file)
@@ -876,13 +876,7 @@ def build_child_argv(command_name: str, args: argparse.Namespace) -> list[str]:
     add("--route", getattr(args, "route", None))
     add("--output-format", getattr(args, "output_format", None))
     add("--images-response-format", getattr(args, "images_response_format", None))
-    add("--images-compat", getattr(args, "images_compat", None))
-    add("--input-fidelity", getattr(args, "input_fidelity", None))
-    add("--background", getattr(args, "background", None))
-    add("--moderation", getattr(args, "moderation", None))
-    add("--partial-images", getattr(args, "partial_images", None))
     add("--timeout", getattr(args, "timeout", None))
-    add("--retries", getattr(args, "retries", None))
     add("--output-compression", getattr(args, "output_compression", None))
     add("--negative-prompt", getattr(args, "negative_prompt", None))
     add("--use-case", getattr(args, "use_case", None))
@@ -1307,6 +1301,9 @@ def readme_contract_issues() -> list[str]:
         "## First Run",
         "## Batch",
         "## Job Recovery",
+        "## Images Route Options",
+        "`--images-response-format`",
+        "`--output-compression`",
         "## Output Contract",
         "## Troubleshooting",
         "workflow_profile",
@@ -1335,6 +1332,9 @@ def api_reference_issues() -> list[str]:
         "when present",
         "`workflow_profile`",
         "diagnostic",
+        "## Active advanced images options",
+        "`--images-response-format`",
+        "`--output-compression`",
         "## Batch JSONL example",
         "## Manifest example",
         "## Failure example",
@@ -1497,6 +1497,25 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
         issues.append("Generate help command failed.")
     if ("candidate-" + "policy") in generate_help.stdout:
         issues.append("Removed flag still appears in generate help.")
+    for marker in REMOVED_ADVANCED_HELP_MARKERS:
+        if marker in generate_help.stdout:
+            issues.append(f"Removed flag still appears in generate help: {marker}")
+
+    probe_help = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "probe", "--help"],
+        cwd=SKILL_ROOT,
+        env=os.environ.copy(),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=30,
+    )
+    if probe_help.returncode != 0:
+        issues.append("Probe help command failed.")
+    for marker in REMOVED_ADVANCED_HELP_MARKERS:
+        if marker in probe_help.stdout:
+            issues.append(f"Removed flag still appears in probe help: {marker}")
 
     issues.extend(env_example_issues())
     issues.extend(readme_contract_issues())
@@ -1708,7 +1727,10 @@ def command_batch(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=f"{HENRY_IMAGE_DISPLAY_NAME} generation helper.")
+    parser = argparse.ArgumentParser(
+        description=f"{HENRY_IMAGE_DISPLAY_NAME} generation helper.",
+        allow_abbrev=False,
+    )
     parser.add_argument("--version", action="version", version=HENRY_IMAGE_DISPLAY_NAME)
 
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -1723,13 +1745,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--quality", default=DEFAULT_QUALITY, choices=sorted(QUALITIES))
         p.add_argument("--output-format", default=DEFAULT_OUTPUT_FORMAT, choices=sorted(OUTPUT_FORMATS))
         p.add_argument("--images-response-format", default="auto", choices=sorted(IMAGE_RESPONSE_FORMATS))
-        p.add_argument("--images-compat", default="auto", choices=sorted(IMAGE_COMPAT_MODES))
-        p.add_argument("--input-fidelity", default="auto", choices=sorted(INPUT_FIDELITIES))
-        p.add_argument("--background", default="auto", choices=sorted(BACKGROUNDS))
-        p.add_argument("--moderation", default="auto", choices=sorted(MODERATIONS))
-        p.add_argument("--partial-images", type=int, default=0)
         p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-        p.add_argument("--retries", type=int, default=0)
         p.add_argument("--n", type=int, default=1)
         p.add_argument("--output-compression", type=int, default=None)
         p.add_argument("--force", action="store_true")
@@ -1738,12 +1754,20 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--prompt", default=None)
         p.add_argument("--prompt-file", default=None)
 
-    probe = sub.add_parser("probe", help="Validate Henry Image configuration and optionally perform a live connectivity check.")
+    probe = sub.add_parser(
+        "probe",
+        help="Validate Henry Image configuration and optionally perform a live connectivity check.",
+        allow_abbrev=False,
+    )
     add_shared_remote_args(probe)
     probe.add_argument("--live", action="store_true")
     probe.set_defaults(func=command_probe)
 
-    prompt = sub.add_parser("prompt", help="Build a Henry Image prompt package without calling the remote service.")
+    prompt = sub.add_parser(
+        "prompt",
+        help="Build a Henry Image prompt package without calling the remote service.",
+        allow_abbrev=False,
+    )
     add_prompt_args(prompt)
     prompt.add_argument("--size", default=DEFAULT_SIZE)
     prompt.add_argument("--negative-prompt", default="")
@@ -1754,7 +1778,7 @@ def build_parser() -> argparse.ArgumentParser:
     prompt.add_argument("--explain", action="store_true")
     prompt.set_defaults(func=command_prompt)
 
-    gen = sub.add_parser("generate", help="Generate a new image and save it locally.")
+    gen = sub.add_parser("generate", help="Generate a new image and save it locally.", allow_abbrev=False)
     add_shared_remote_args(gen)
     add_prompt_args(gen)
     gen.add_argument("--out", default=DEFAULT_OUT)
@@ -1762,7 +1786,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--dry-run", action="store_true")
     gen.set_defaults(func=command_generate)
 
-    edit = sub.add_parser("edit", help="Edit an image using one or more image inputs.")
+    edit = sub.add_parser("edit", help="Edit an image using one or more image inputs.", allow_abbrev=False)
     add_shared_remote_args(edit)
     add_prompt_args(edit)
     edit.add_argument("--image", action="append", default=[])
@@ -1774,7 +1798,7 @@ def build_parser() -> argparse.ArgumentParser:
     edit.add_argument("--dry-run", action="store_true")
     edit.set_defaults(func=command_edit)
 
-    batch = sub.add_parser("batch", help="Run a JSONL batch of generate or edit tasks.")
+    batch = sub.add_parser("batch", help="Run a JSONL batch of generate or edit tasks.", allow_abbrev=False)
     add_shared_remote_args(batch)
     batch.add_argument("--batch-input", required=True)
     batch.add_argument("--out-dir", default="output/imagegen/batch")
@@ -1789,7 +1813,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--prompt-file", default=None)
     batch.set_defaults(func=command_batch)
 
-    job_status = sub.add_parser("job-status", help="Check a Henry Image background job.")
+    job_status = sub.add_parser("job-status", help="Check a Henry Image background job.", allow_abbrev=False)
     job_status.add_argument("--job", required=True)
     job_status.add_argument("--jobs-dir", default=None)
     job_status.add_argument("--watch", action="store_true")
@@ -1797,28 +1821,28 @@ def build_parser() -> argparse.ArgumentParser:
     job_status.add_argument("--diagnose", action="store_true")
     job_status.set_defaults(func=command_job_status)
 
-    job_diagnose = sub.add_parser("job-diagnose", help="Summarize a Henry Image background job.")
+    job_diagnose = sub.add_parser("job-diagnose", help="Summarize a Henry Image background job.", allow_abbrev=False)
     job_diagnose.add_argument("--job", required=True)
     job_diagnose.add_argument("--jobs-dir", default=None)
     job_diagnose.add_argument("--format", default="json", choices=("json", "human"))
     job_diagnose.set_defaults(func=command_job_diagnose)
 
-    job_cancel = sub.add_parser("job-cancel", help="Cancel a Henry Image background job.")
+    job_cancel = sub.add_parser("job-cancel", help="Cancel a Henry Image background job.", allow_abbrev=False)
     job_cancel.add_argument("--job", required=True)
     job_cancel.add_argument("--jobs-dir", default=None)
     job_cancel.add_argument("--dry-run", action="store_true")
     job_cancel.set_defaults(func=command_job_cancel)
 
-    job_list = sub.add_parser("job-list", help="List Henry Image background jobs.")
+    job_list = sub.add_parser("job-list", help="List Henry Image background jobs.", allow_abbrev=False)
     job_list.add_argument("--jobs-dir", default=None)
     job_list.set_defaults(func=command_job_list)
 
-    job_cleanup = sub.add_parser("job-cleanup", help="Remove old Henry Image background jobs.")
+    job_cleanup = sub.add_parser("job-cleanup", help="Remove old Henry Image background jobs.", allow_abbrev=False)
     job_cleanup.add_argument("--jobs-dir", default=None)
     job_cleanup.add_argument("--older-than", required=True)
     job_cleanup.set_defaults(func=command_job_cleanup)
 
-    quick = sub.add_parser("quick_validate", help="Run Henry Image local contract checks.")
+    quick = sub.add_parser("quick_validate", help="Run Henry Image local contract checks.", allow_abbrev=False)
     quick.set_defaults(func=command_quick_validate)
 
     return parser

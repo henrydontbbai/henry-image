@@ -2,7 +2,7 @@
 
 Henry Image is a small local image workflow project for real image delivery, prompt packaging, and job recovery.
 
-Version: `0.2.6`
+Version: `1.0.0`
 
 ## What it does
 
@@ -110,6 +110,16 @@ python .\scripts\henry_image.py job-list
 
 `job-list` reports the saved job metadata on disk. It does not probe live processes in real time.
 
+## Images Route Options
+
+The public CLI keeps only these route-specific advanced images options:
+
+- `--images-response-format`
+- `--output-compression`
+
+These options only affect requests sent through the `images` route.
+`--output-compression` applies only to `jpeg` or `webp` output there.
+
 ## Output Contract
 
 Stable top-level stdout fields:
@@ -165,6 +175,7 @@ python .\scripts\henry_image.py quick_validate
 - Missing configuration: confirm all four `HENRY_IMAGE_*` variables are set in the current process.
 - Missing prompt or invalid local input: Henry Image should return a structured `validation_error` instead of a Python traceback.
 - Route validation error: use `--model` for `responses`, `--image-model` for `images`, and both for `auto`.
+- Removed legacy advanced flags: if an older command still passes low-value tuning flags, remove them and rerun with the current help output.
 - Readiness check: run `python .\scripts\henry_image.py probe --route auto --model response-model-v1 --image-model image-model-v1`
 - Upstream timeout: Henry Image reports a structured `timeout` error; it does not hide remote unavailability. Retry with a shorter `--timeout` for diagnosis, or treat it as a remote service issue.
 - Repository health: rerun `python .\scripts\henry_image.py quick_validate`
