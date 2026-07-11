@@ -31,7 +31,7 @@ EXPECTED_WORKFLOW_RUNNERS = {
     "contract": "ubuntu-latest",
     "test": "ubuntu-latest",
     "windows": "windows-latest",
-    "macos": "macos-latest",
+    "macos": "macos-26",
 }
 EXPECTED_WORKFLOW_MATRICES = {
     "test": {"3.9", "3.10", "3.11", "3.12"},
