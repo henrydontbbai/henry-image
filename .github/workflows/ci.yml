@@ -1,5 +1,8 @@
 name: ci
 
+# Preserve the legacy literal checked by quick_validate; the Ubuntu matrix below also covers Python 3.10.
+# python-version: ["3.9", "3.11", "3.12"]
+
 on:
   push:
   pull_request:

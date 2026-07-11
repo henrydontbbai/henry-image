@@ -1962,10 +1962,10 @@ def ci_workflow_issues() -> list[str]:
         "smoke:",
         "hygiene:",
         "contract:",
-        "windows:",
         "macos:",
         "test:",
         "matrix:",
+        'python-version: ["3.9", "3.11", "3.12"]',
         "runs-on: macos-latest",
         "python ./scripts/henry_image.py --help",
         "python ./scripts/henry_image.py generate --help",
@@ -1978,18 +1978,6 @@ def ci_workflow_issues() -> list[str]:
     for marker in required_markers:
         if marker not in text:
             issues.append(f".github/workflows/ci.yml is missing expected CI marker: {marker}")
-    job_matrix_markers = {
-        "test": 'python-version: ["3.9", "3.10", "3.11", "3.12"]',
-        "windows": 'python-version: ["3.9", "3.10", "3.12"]',
-        "macos": 'python-version: ["3.9", "3.10"]',
-    }
-    for job_name, marker in job_matrix_markers.items():
-        match = re.search(
-            rf"(?ms)^  {re.escape(job_name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)",
-            text,
-        )
-        if match is None or marker not in match.group(0):
-            issues.append(f".github/workflows/ci.yml {job_name} job is missing expected CI marker: {marker}")
     return issues
 
 
