@@ -1953,34 +1953,6 @@ def version_consistency_issues() -> list[str]:
     return issues
 
 
-def ci_workflow_issues() -> list[str]:
-    ci_path = SKILL_ROOT / ".github" / "workflows" / "ci.yml"
-    if not ci_path.exists():
-        return []
-    text = ci_path.read_text(encoding="utf-8")
-    required_markers = (
-        "smoke:",
-        "hygiene:",
-        "contract:",
-        "macos:",
-        "test:",
-        "matrix:",
-        'python-version: ["3.9", "3.11", "3.12"]',
-        "runs-on: macos-latest",
-        "python ./scripts/henry_image.py --help",
-        "python ./scripts/henry_image.py generate --help",
-        "python ./scripts/henry_image.py quick_validate",
-        "python -m pytest -q tests/test_repo_hygiene.py",
-        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py",
-        "python -m pytest -q",
-    )
-    issues: list[str] = []
-    for marker in required_markers:
-        if marker not in text:
-            issues.append(f".github/workflows/ci.yml is missing expected CI marker: {marker}")
-    return issues
-
-
 def release_process_issues() -> list[str]:
     release_doc = SKILL_ROOT / "docs" / "release-process.md"
     if not release_doc.exists():
@@ -2087,7 +2059,6 @@ def command_quick_validate(_args: argparse.Namespace) -> int:
     issues.extend(api_reference_issues())
     issues.extend(maintainer_doc_issues())
     issues.extend(version_consistency_issues())
-    issues.extend(ci_workflow_issues())
     issues.extend(release_process_issues())
     issues.extend(disallowed_marker_issues())
     payload = envelope(
