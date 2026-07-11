@@ -169,7 +169,7 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
         "contract:",
         "test:",
         "matrix:",
-        'python-version: ["3.9", "3.11", "3.12"]',
+        'python-version: ["3.9", "3.10", "3.11", "3.12"]',
         "python ./scripts/henry_image.py --help",
         "python ./scripts/henry_image.py generate --help",
         "python ./scripts/henry_image.py quick_validate",
@@ -200,7 +200,7 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
 
     assert "runs-on: ubuntu-latest" in test
     assert "matrix:" in test
-    assert 'python-version: ["3.9", "3.11", "3.12"]' in test
+    assert 'python-version: ["3.9", "3.10", "3.11", "3.12"]' in test
     assert "python -m pytest -q" in test
 
 
@@ -210,7 +210,7 @@ def test_ci_workflow_includes_windows_runtime_coverage():
 
     for expected in (
         "runs-on: windows-latest",
-        'python-version: ["3.9", "3.12"]',
+        'python-version: ["3.9", "3.10", "3.12"]',
         "matrix:",
         "python .\\scripts\\henry_image.py quick_validate",
         "python -m pytest -q",
@@ -231,11 +231,25 @@ def test_ci_workflow_includes_macos_runtime_coverage():
 
     for expected in (
         "runs-on: macos-latest",
-        'python-version: "3.9"',
+        "matrix:",
+        'python-version: ["3.9", "3.10"]',
+        "python-version: ${{ matrix.python-version }}",
         "python -m pytest -q",
         "python ./scripts/henry_image.py quick_validate",
     ):
         assert expected in block
+
+
+def test_ci_workflow_covers_python_310_on_all_supported_platforms():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    expected_matrices = {
+        "test": 'python-version: ["3.9", "3.10", "3.11", "3.12"]',
+        "windows": 'python-version: ["3.9", "3.10", "3.12"]',
+        "macos": 'python-version: ["3.9", "3.10"]',
+    }
+
+    for job_name, expected_matrix in expected_matrices.items():
+        assert expected_matrix in workflow_job_block(text, job_name)
 
 
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
