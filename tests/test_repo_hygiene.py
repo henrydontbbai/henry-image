@@ -307,6 +307,9 @@ def test_maintainer_docs_cover_local_checks_and_private_reporting():
     for expected in (
         "# Security Policy",
         "Report security issues privately.",
+        "GitHub Private Vulnerability Reporting",
+        "https://github.com/henrydontbbai/henry-image/security/advisories/new",
+        "Please avoid filing public issues",
         "## Supported Versions",
     ):
         assert expected in security
