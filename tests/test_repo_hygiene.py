@@ -204,6 +204,15 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
     assert "python -m pytest -q" in test
 
 
+def test_ci_workflow_uses_node24_actions():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert text.count("uses: actions/checkout@v7") == 6
+    assert text.count("uses: actions/setup-python@v6") == 6
+    assert "actions/checkout@v4" not in text
+    assert "actions/setup-python@v5" not in text
+
+
 def test_ci_workflow_includes_windows_runtime_coverage():
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     block = workflow_job_block(text, "windows")
