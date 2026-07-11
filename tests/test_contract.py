@@ -57,6 +57,40 @@ def read_payload(code, stdout):
     return json.loads(stdout)
 
 
+def assert_quick_validate_envelope(payload, *, ok):
+    assert set(payload) == {
+        "ok",
+        "status",
+        "command",
+        "provider",
+        "request_id",
+        "outputs",
+        "error",
+        "metadata",
+    }
+    assert payload["ok"] is ok
+    assert payload["command"] == "henry.quick_validate"
+    assert payload["provider"] == {"type": "henry-local-validator"}
+    assert payload["request_id"] is None
+    assert payload["metadata"]["strict_names"] is True
+    assert isinstance(payload["outputs"], list)
+    assert len(payload["outputs"]) == 1
+    assert payload["outputs"][0]["type"] == "henry_validation_results"
+    assert isinstance(payload["outputs"][0]["issues"], list)
+    if ok:
+        assert payload["status"] == "completed"
+        assert payload["error"] is None
+    else:
+        assert payload["status"] == "validation_error"
+        assert payload["error"] == {
+            "message": "Local validation issues were found.",
+            "type": None,
+            "code": None,
+            "status": None,
+            "category": "validation_error",
+        }
+
+
 def data_url(raw: bytes, mime: str = "image/png") -> str:
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{encoded}"
@@ -1188,8 +1222,14 @@ def test_quick_validate_reports_missing_required_files():
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
-    assert payload["status"] == "validation_error"
+    assert_quick_validate_envelope(payload, ok=False)
     assert "Missing required file: CONTRIBUTING.md" in payload["outputs"][0]["issues"]
+
+
+def test_quick_validate_has_no_runtime_ci_workflow_text_validator():
+    mod = load_module()
+
+    assert not hasattr(mod, "ci_workflow_issues")
 
 
 def test_release_process_validation_requires_version_source_and_all_ci_platforms():
@@ -1259,16 +1299,15 @@ def test_quick_validate_reports_removed_help_markers():
         with patched(mod, "env_example_issues", lambda: []):
             with patched(mod, "readme_contract_issues", lambda: []):
                 with patched(mod, "version_consistency_issues", lambda: []):
-                    with patched(mod, "ci_workflow_issues", lambda: []):
-                        with patched(mod, "release_process_issues", lambda: []):
-                            with patched(mod, "disallowed_marker_issues", lambda: []):
-                                with patched(mod.subprocess, "run", fake_subprocess_run):
-                                    with contextlib.redirect_stdout(stdout):
-                                        code = mod.command_quick_validate(argparse.Namespace())
+                    with patched(mod, "release_process_issues", lambda: []):
+                        with patched(mod, "disallowed_marker_issues", lambda: []):
+                            with patched(mod.subprocess, "run", fake_subprocess_run):
+                                with contextlib.redirect_stdout(stdout):
+                                    code = mod.command_quick_validate(argparse.Namespace())
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
-    assert payload["status"] == "validation_error"
+    assert_quick_validate_envelope(payload, ok=False)
     issues = payload["outputs"][0]["issues"]
     assert any("Removed command still appears in top-level help" in item for item in issues)
     assert any("Removed flag still appears in generate help" in item for item in issues)
@@ -1286,16 +1325,15 @@ def test_quick_validate_reports_disallowed_marker_issue():
         with patched(mod, "env_example_issues", lambda: []):
             with patched(mod, "readme_contract_issues", lambda: []):
                 with patched(mod, "version_consistency_issues", lambda: []):
-                    with patched(mod, "ci_workflow_issues", lambda: []):
-                        with patched(mod, "release_process_issues", lambda: []):
-                            with patched(mod, "disallowed_marker_issues", lambda: ["README.md contains forbidden-marker"]):
-                                with patched(mod.subprocess, "run", fake_subprocess_run):
-                                    with contextlib.redirect_stdout(stdout):
-                                        code = mod.command_quick_validate(argparse.Namespace())
+                    with patched(mod, "release_process_issues", lambda: []):
+                        with patched(mod, "disallowed_marker_issues", lambda: ["README.md contains forbidden-marker"]):
+                            with patched(mod.subprocess, "run", fake_subprocess_run):
+                                with contextlib.redirect_stdout(stdout):
+                                    code = mod.command_quick_validate(argparse.Namespace())
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
-    assert payload["status"] == "validation_error"
+    assert_quick_validate_envelope(payload, ok=False)
     assert "README.md contains forbidden-marker" in payload["outputs"][0]["issues"]
 
 
@@ -1319,7 +1357,7 @@ def test_quick_validate_passes_for_the_repo():
         proc = run_cli(["quick_validate"], root)
         assert proc.returncode == 0, proc.stderr + proc.stdout
         payload = json.loads(proc.stdout)
-        assert payload["status"] == "completed"
+        assert_quick_validate_envelope(payload, ok=True)
         assert payload["outputs"][0]["issues"] == []
 
 

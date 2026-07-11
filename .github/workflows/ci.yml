@@ -1,8 +1,5 @@
 name: ci
 
-# Preserve the legacy literal checked by quick_validate; the Ubuntu matrix below also covers Python 3.10.
-# python-version: ["3.9", "3.11", "3.12"]
-
 on:
   push:
   pull_request:
@@ -29,8 +26,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install test runner
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: python -m pip install pytest -r requirements-test.txt
       - name: Run hygiene tests
         run: python -m pytest -q tests/test_repo_hygiene.py
 
@@ -41,8 +38,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install test runner
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: python -m pip install pytest -r requirements-test.txt
       - name: Run contract tests
         run: python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py
 
@@ -57,8 +54,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install test runner
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: python -m pip install pytest -r requirements-test.txt
       - name: Run pytest
         run: python -m pytest -q
       - name: Run quick validation
@@ -75,8 +72,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install test runner
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: python -m pip install pytest -r requirements-test.txt
       - name: Run pytest
         run: python -m pytest -q
       - name: Run quick validation
@@ -93,7 +90,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install test runner
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: python -m pip install pytest -r requirements-test.txt
       - name: Run pytest
         run: python -m pytest -q

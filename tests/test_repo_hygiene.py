@@ -1,6 +1,9 @@
+from copy import deepcopy
 from pathlib import Path
 import re
 
+import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKED_PATHS = (
@@ -20,6 +23,131 @@ CHECKED_PATHS = (
 )
 TEXT_SUFFIXES = {".md", ".py", ".yaml", ".yml", ".json", ".txt"}
 CURRENT_FILE = Path(__file__).resolve()
+
+WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+EXPECTED_WORKFLOW_RUNNERS = {
+    "smoke": "ubuntu-latest",
+    "hygiene": "ubuntu-latest",
+    "contract": "ubuntu-latest",
+    "test": "ubuntu-latest",
+    "windows": "windows-latest",
+    "macos": "macos-latest",
+}
+EXPECTED_WORKFLOW_MATRICES = {
+    "test": {"3.9", "3.10", "3.11", "3.12"},
+    "windows": {"3.9", "3.10", "3.12"},
+    "macos": {"3.9", "3.10"},
+}
+EXPECTED_WORKFLOW_COMMANDS = {
+    "smoke": {
+        "python ./scripts/henry_image.py --help",
+        "python ./scripts/henry_image.py generate --help",
+        "python ./scripts/henry_image.py quick_validate",
+    },
+    "hygiene": {"python -m pytest -q tests/test_repo_hygiene.py"},
+    "contract": {
+        "python -m pytest -q tests/test_contract.py tests/test_jobs.py "
+        "tests/test_request_layer.py tests/test_workflow_profile.py"
+    },
+    "test": {"python -m pytest -q"},
+    "windows": {"python -m pytest -q", "python .\\scripts\\henry_image.py quick_validate"},
+    "macos": {"python -m pytest -q", "python ./scripts/henry_image.py quick_validate"},
+}
+PYTEST_WORKFLOW_JOBS = {"hygiene", "contract", "test", "windows", "macos"}
+
+
+def load_workflow_text(text: str) -> dict:
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    assert isinstance(workflow, dict)
+    return workflow
+
+
+def load_ci_workflow() -> dict:
+    return load_workflow_text(WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+
+def workflow_contract_issues(workflow: object) -> list[str]:
+    if not isinstance(workflow, dict):
+        return ["workflow must be a mapping"]
+
+    issues: list[str] = []
+    triggers = workflow.get("on")
+    if not isinstance(triggers, dict) or not {"push", "pull_request"}.issubset(triggers):
+        issues.append("workflow must define push and pull_request triggers")
+
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        return issues + ["workflow must define jobs as a mapping"]
+
+    for job_name, expected_runner in EXPECTED_WORKFLOW_RUNNERS.items():
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            issues.append(f"workflow is missing required job: {job_name}")
+            continue
+
+        if job.get("runs-on") != expected_runner:
+            issues.append(f"{job_name} must run on {expected_runner}")
+
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            issues.append(f"{job_name} must define steps")
+            continue
+
+        uses = [step.get("uses") for step in steps if isinstance(step, dict)]
+        for action_family, expected_action in (
+            ("actions/checkout", "actions/checkout@v7"),
+            ("actions/setup-python", "actions/setup-python@v6"),
+        ):
+            family_uses = [
+                action
+                for action in uses
+                if isinstance(action, str) and action.startswith(f"{action_family}@")
+            ]
+            if family_uses != [expected_action]:
+                issues.append(f"{job_name} must use exactly one {expected_action}")
+
+        runs = {step.get("run") for step in steps if isinstance(step, dict)}
+        for command in EXPECTED_WORKFLOW_COMMANDS[job_name]:
+            if command not in runs:
+                issues.append(f"{job_name} is missing run command: {command}")
+
+        if job_name in PYTEST_WORKFLOW_JOBS:
+            if "python -m pip install pytest -r requirements-test.txt" not in runs:
+                issues.append(f"{job_name} must install test requirements")
+        elif job_name == "smoke" and any(
+            isinstance(command, str)
+            and ("pip install" in command or "requirements-test.txt" in command)
+            for command in runs
+        ):
+            issues.append("smoke must not install test dependencies")
+
+        if job_name in EXPECTED_WORKFLOW_MATRICES:
+            strategy = job.get("strategy")
+            matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+            versions = matrix.get("python-version") if isinstance(matrix, dict) else None
+            expected_versions = EXPECTED_WORKFLOW_MATRICES[job_name]
+            if (
+                not isinstance(versions, list)
+                or len(versions) != len(set(versions))
+                or set(versions) != expected_versions
+            ):
+                issues.append(f"{job_name} must keep the expected Python matrix without duplicates")
+
+            setup_steps = [
+                step
+                for step in steps
+                if isinstance(step, dict) and step.get("uses") == "actions/setup-python@v6"
+            ]
+            if not any(
+                isinstance(step.get("with"), dict)
+                and step["with"].get("python-version") == "${{ matrix.python-version }}"
+                for step in setup_steps
+            ):
+                issues.append(f"{job_name} must configure setup-python from matrix.python-version")
+
+    return issues
+
+
 def marker(*parts):
     return "".join(parts)
 
@@ -70,15 +198,6 @@ def iter_text_files():
                 yield candidate
 
 
-def workflow_job_block(workflow_text: str, job_name: str) -> str:
-    pattern = re.compile(
-        rf"(?ms)^  {re.escape(job_name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)"
-    )
-    match = pattern.search(workflow_text)
-    assert match, f"missing workflow job block: {job_name}"
-    return match.group(0)
-
-
 def test_public_release_files_exist():
     expected = (
         ROOT / "README.md",
@@ -87,6 +206,7 @@ def test_public_release_files_exist():
         ROOT / "CONTRIBUTING.md",
         ROOT / "SECURITY.md",
         ROOT / ".env.example",
+        ROOT / "requirements-test.txt",
         ROOT / "SKILL.md",
         ROOT / "docs" / "release-process.md",
         ROOT / "agents" / "henry-image.yaml",
@@ -161,104 +281,77 @@ def test_public_version_markers_are_in_sync():
     assert f"latest published `{major}.{minor}.x` patch" in security_text
 
 
-def test_ci_workflow_has_layered_jobs_and_python_matrix():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for expected in (
-        "smoke:",
-        "hygiene:",
-        "contract:",
-        "test:",
-        "matrix:",
-        'python-version: ["3.9", "3.10", "3.11", "3.12"]',
-        "python ./scripts/henry_image.py --help",
-        "python ./scripts/henry_image.py generate --help",
-        "python ./scripts/henry_image.py quick_validate",
-        "python -m pytest -q tests/test_repo_hygiene.py",
-        "python -m pytest -q tests/test_contract.py tests/test_jobs.py tests/test_request_layer.py tests/test_workflow_profile.py",
-        "python -m pytest -q",
-    ):
-        assert expected in text
-
-    smoke = workflow_job_block(text, "smoke")
-    hygiene = workflow_job_block(text, "hygiene")
-    contract = workflow_job_block(text, "contract")
-    test = workflow_job_block(text, "test")
-
-    assert "runs-on: ubuntu-latest" in smoke
-    assert "python ./scripts/henry_image.py --help" in smoke
-    assert "python ./scripts/henry_image.py generate --help" in smoke
-    assert "python ./scripts/henry_image.py quick_validate" in smoke
-
-    assert "runs-on: ubuntu-latest" in hygiene
-    assert "python -m pytest -q tests/test_repo_hygiene.py" in hygiene
-
-    assert "runs-on: ubuntu-latest" in contract
-    assert (
-        "python -m pytest -q tests/test_contract.py tests/test_jobs.py "
-        "tests/test_request_layer.py tests/test_workflow_profile.py"
-    ) in contract
-
-    assert "runs-on: ubuntu-latest" in test
-    assert "matrix:" in test
-    assert 'python-version: ["3.9", "3.10", "3.11", "3.12"]' in test
-    assert "python -m pytest -q" in test
+def test_ci_workflow_matches_structured_contract():
+    assert workflow_contract_issues(load_ci_workflow()) == []
 
 
-def test_ci_workflow_uses_node24_actions():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-
-    assert text.count("uses: actions/checkout@v7") == 6
-    assert text.count("uses: actions/setup-python@v6") == 6
-    assert "actions/checkout@v4" not in text
-    assert "actions/setup-python@v5" not in text
+def test_ci_workflow_rejects_malformed_yaml():
+    with pytest.raises(yaml.YAMLError):
+        load_workflow_text("jobs: [")
 
 
-def test_ci_workflow_includes_windows_runtime_coverage():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    block = workflow_job_block(text, "windows")
+def test_ci_workflow_rejects_missing_job():
+    workflow = deepcopy(load_ci_workflow())
+    del workflow["jobs"]["contract"]
 
-    for expected in (
-        "runs-on: windows-latest",
-        'python-version: ["3.9", "3.10", "3.12"]',
-        "matrix:",
-        "python .\\scripts\\henry_image.py quick_validate",
-        "python -m pytest -q",
-    ):
-        assert expected in block
+    assert "workflow is missing required job: contract" in workflow_contract_issues(workflow)
 
 
-def test_ci_workflow_includes_ubuntu_runtime_coverage():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for job_name in ("smoke", "hygiene", "contract", "test"):
-        block = workflow_job_block(text, job_name)
-        assert "runs-on: ubuntu-latest" in block
+def test_ci_workflow_rejects_wrong_runner():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["windows"]["runs-on"] = "ubuntu-latest"
+
+    assert "windows must run on windows-latest" in workflow_contract_issues(workflow)
 
 
-def test_ci_workflow_includes_macos_runtime_coverage():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    block = workflow_job_block(text, "macos")
+def test_ci_workflow_rejects_duplicate_matrix_version():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["test"]["strategy"]["matrix"]["python-version"] = [
+        "3.9",
+        "3.10",
+        "3.10",
+        "3.12",
+    ]
 
-    for expected in (
-        "runs-on: macos-latest",
-        "matrix:",
-        'python-version: ["3.9", "3.10"]',
-        "python-version: ${{ matrix.python-version }}",
-        "python -m pytest -q",
-        "python ./scripts/henry_image.py quick_validate",
-    ):
-        assert expected in block
+    assert "test must keep the expected Python matrix without duplicates" in workflow_contract_issues(workflow)
 
 
-def test_ci_workflow_covers_python_310_on_all_supported_platforms():
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    expected_matrices = {
-        "test": 'python-version: ["3.9", "3.10", "3.11", "3.12"]',
-        "windows": 'python-version: ["3.9", "3.10", "3.12"]',
-        "macos": 'python-version: ["3.9", "3.10"]',
-    }
+def test_ci_workflow_rejects_legacy_action_majors():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["test"]["steps"].extend(
+        [
+            {"uses": "actions/checkout@v4"},
+            {"uses": "actions/setup-python@v5"},
+        ]
+    )
 
-    for job_name, expected_matrix in expected_matrices.items():
-        assert expected_matrix in workflow_job_block(text, job_name)
+    issues = workflow_contract_issues(workflow)
+    assert "test must use exactly one actions/checkout@v7" in issues
+    assert "test must use exactly one actions/setup-python@v6" in issues
+
+
+def test_ci_workflow_rejects_smoke_dependency_install():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["smoke"]["steps"].append(
+        {"run": "python -m pip install pytest -r requirements-test.txt"}
+    )
+
+    assert "smoke must not install test dependencies" in workflow_contract_issues(workflow)
+
+
+def test_ci_workflow_rejects_command_only_in_comment():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8").replace(
+        "run: python ./scripts/henry_image.py quick_validate",
+        "# run: python ./scripts/henry_image.py quick_validate",
+        1,
+    )
+
+    issues = workflow_contract_issues(load_workflow_text(text))
+    assert "smoke is missing run command: python ./scripts/henry_image.py quick_validate" in issues
+
+
+def test_test_requirements_pin_pyyaml_for_structured_workflow_checks():
+    assert (ROOT / "requirements-test.txt").read_text(encoding="utf-8") == "PyYAML==6.0.3\n"
 
 
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
@@ -308,8 +401,10 @@ def test_maintainer_docs_cover_local_checks_and_private_reporting():
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     for expected in (
         "# Contributing",
+        "python -m pip install pytest -r requirements-test.txt",
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py quick_validate",
+        "Workflow semantics are verified by pytest",
         "CHANGELOG.md",
     ):
         assert expected in contributing
@@ -318,7 +413,12 @@ def test_maintainer_docs_cover_local_checks_and_private_reporting():
         "Report security issues privately.",
         "GitHub Private Vulnerability Reporting",
         "https://github.com/henrydontbbai/henry-image/security/advisories/new",
-        "Please avoid filing public issues",
+        "Please do not file public issues",
+        "live credentials, personal data, or exploit details",
+        "affected version or commit",
+        "reproduction steps or a proof of concept",
+        "5 business days",
+        "coordinated remediation",
         "## Supported Versions",
     ):
         assert expected in security
