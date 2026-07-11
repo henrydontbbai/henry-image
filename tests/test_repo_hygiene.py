@@ -141,18 +141,24 @@ def test_readme_includes_minimal_quickstart_and_troubleshooting():
 
 
 def test_public_version_markers_are_in_sync():
-    script_text = (ROOT / "scripts" / "henry_image.py").read_text(encoding="utf-8")
+    version_text = (ROOT / "scripts" / "henry_image_core" / "version.py").read_text(encoding="utf-8")
+    request_text = (ROOT / "scripts" / "henry_image_core" / "request.py").read_text(encoding="utf-8")
     readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
     skill_text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    security_text = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
-    version_match = re.search(r'HENRY_IMAGE_VERSION = "([^"]+)"', script_text)
+    version_match = re.search(r'HENRY_IMAGE_VERSION = "([^"]+)"', version_text)
     assert version_match
     version = version_match.group(1)
 
+    assert "from henry_image_core.version import API_USER_AGENT" in request_text
+    assert "Henry-Image/1.0.1" not in request_text
     assert f"Version: `{version}`" in readme_text
     assert f"V{version}" in skill_text
     assert f"## {version} -" in changelog_text
+    major, minor, _patch = version.split(".", 2)
+    assert f"latest published `{major}.{minor}.x` patch" in security_text
 
 
 def test_ci_workflow_has_layered_jobs_and_python_matrix():
@@ -163,7 +169,7 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
         "contract:",
         "test:",
         "matrix:",
-        'python-version: ["3.11", "3.12"]',
+        'python-version: ["3.9", "3.11", "3.12"]',
         "python ./scripts/henry_image.py --help",
         "python ./scripts/henry_image.py generate --help",
         "python ./scripts/henry_image.py quick_validate",
@@ -194,7 +200,7 @@ def test_ci_workflow_has_layered_jobs_and_python_matrix():
 
     assert "runs-on: ubuntu-latest" in test
     assert "matrix:" in test
-    assert 'python-version: ["3.11", "3.12"]' in test
+    assert 'python-version: ["3.9", "3.11", "3.12"]' in test
     assert "python -m pytest -q" in test
 
 
@@ -204,7 +210,8 @@ def test_ci_workflow_includes_windows_runtime_coverage():
 
     for expected in (
         "runs-on: windows-latest",
-        'python-version: "3.12"',
+        'python-version: ["3.9", "3.12"]',
+        "matrix:",
         "python .\\scripts\\henry_image.py quick_validate",
         "python -m pytest -q",
     ):
@@ -216,6 +223,19 @@ def test_ci_workflow_includes_ubuntu_runtime_coverage():
     for job_name in ("smoke", "hygiene", "contract", "test"):
         block = workflow_job_block(text, job_name)
         assert "runs-on: ubuntu-latest" in block
+
+
+def test_ci_workflow_includes_macos_runtime_coverage():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    block = workflow_job_block(text, "macos")
+
+    for expected in (
+        "runs-on: macos-latest",
+        'python-version: "3.9"',
+        "python -m pytest -q",
+        "python ./scripts/henry_image.py quick_validate",
+    ):
+        assert expected in block
 
 
 def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
@@ -234,6 +254,28 @@ def test_api_notes_define_stable_contract_and_workflow_profile_boundary():
         "## Batch JSONL example",
         "## Manifest example",
         "## Failure example",
+    ):
+        assert expected in text
+
+
+def test_api_notes_document_reliability_statuses_and_error_codes():
+    text = (ROOT / "references" / "api.md").read_text(encoding="utf-8")
+    for expected in (
+        "## Reliability statuses and error codes",
+        "`identity_unverified`",
+        "`cancel_pending`",
+        "`cancel_failed`",
+        "`unsafe_redirect`",
+        "`unsafe_image_url`",
+        "`invalid_response_data`",
+        "`unsupported_output_count`",
+        "`invalid_image_format`",
+        "`incompatible_flags`",
+        "`output_write_failed`",
+        "`invalid_job_metadata`",
+        "`cleanup_failed`",
+        "`response_too_large`",
+        "`job_start_failed`",
     ):
         assert expected in text
 
@@ -272,6 +314,8 @@ def test_release_process_doc_defines_version_rules_and_tag_policy():
         "OpenCode",
         "Ubuntu",
         "Windows",
+        "macOS",
+        "scripts/henry_image_core/version.py",
         "transport",
         "does not block",
         "git tag",

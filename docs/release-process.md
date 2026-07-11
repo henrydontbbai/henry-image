@@ -27,7 +27,7 @@ Create or update a release only when the shipped behavior, public interface, out
 
 ## Release Checklist
 
-1. Confirm the repo version is correct in `scripts/henry_image.py`, `README.md`, `SKILL.md`, and `CHANGELOG.md`
+1. Confirm the repo version is correct in `scripts/henry_image_core/version.py`, `README.md`, `SKILL.md`, and `CHANGELOG.md`
 2. Run:
 
 ```powershell
@@ -35,7 +35,7 @@ python -m pytest -q
 python .\scripts\henry_image.py quick_validate
 ```
 
-3. Confirm GitHub Actions is green for both the Ubuntu jobs and the Windows job
+3. Confirm GitHub Actions is green for the Ubuntu, Windows, and macOS jobs
 4. Sync an audit worktree and ask OpenCode for a blocker review
 5. If OpenCode fails because of transport or tool availability, record that the attempt was made; a transport failure does not block a maintenance-only PR when local checks, audit worktree checks, and GitHub CI are all green
 6. Update `CHANGELOG.md` so the release entry matches the current shipped state

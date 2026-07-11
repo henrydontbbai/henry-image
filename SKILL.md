@@ -1,9 +1,9 @@
 ---
 name: henry-image
-description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V1.0.0. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
+description: Use when Henry asks to generate, edit, save, diagnose, or batch image work with Henry Image V1.0.1. Use the CLI for real image delivery and use prompt output only when prompt output is explicitly requested or image delivery is blocked.
 ---
 
-# Henry Image V1.0.0
+# Henry Image V1.0.1
 
 ## Purpose
 
@@ -45,6 +45,7 @@ Advanced override:
 - `--route responses` requires `model`
 - `--route images` requires `image-model`
 - `--route auto` requires both
+- `responses` and `auto` require `--n 1`; use `images` for multiple outputs
 
 Missing values are configuration errors and should be reported plainly.
 

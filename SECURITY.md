@@ -8,4 +8,4 @@ Please avoid filing public issues for security-sensitive reports. Share the repo
 
 ## Supported Versions
 
-Only the latest published `0.2.x` patch version is supported for security fixes.
+Only the latest published `1.0.x` patch version is supported for security fixes.

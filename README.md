@@ -2,7 +2,9 @@
 
 Henry Image is a small local image workflow project for real image delivery, prompt packaging, and job recovery.
 
-Version: `1.0.0`
+Version: `1.0.1`
+
+Supported runtime: Python `3.9+` on Windows, Linux, and macOS. Verified process-identity cancellation is available on Windows and Linux; macOS safely refuses unverified cancellation.
 
 ## What it does
 
@@ -110,6 +112,8 @@ python .\scripts\henry_image.py job-list
 
 `job-list` reports the saved job metadata on disk. It does not probe live processes in real time.
 
+New jobs store a platform process identity so `job-cancel` does not terminate a reused PID. Legacy jobs without identity metadata can still report as running, but cancellation is refused with `identity_unverified`. Verified cancellation may finish as `cancelled`, remain `cancel_pending`, or fail as `cancel_failed`.
+
 ## Images Route Options
 
 The public CLI keeps only these route-specific advanced images options:
@@ -119,6 +123,7 @@ The public CLI keeps only these route-specific advanced images options:
 
 These options only affect requests sent through the `images` route.
 `--output-compression` applies only to `jpeg` or `webp` output there.
+Use `--route images` when `--n` is greater than `1`; `responses` and `auto` reject multiple outputs before sending a request.
 
 ## Output Contract
 
@@ -146,6 +151,10 @@ Stable metadata fields, when present:
 Validation failures may emit only partial metadata such as `workflow`, `replay_command`, and `next_action`.
 
 `workflow_profile` may still appear in `metadata`, but it is diagnostic and may change without compatibility guarantees.
+
+PNG, JPEG, and WebP bytes are checked against the requested format. Images and the manifest are staged and committed as one bundle; failed commits restore previous files when `--force` is used.
+
+`--background-job` cannot be combined with `--dry-run`. Invalid successful-response shapes and local output write failures return structured validation errors instead of Python tracebacks.
 
 ## Main commands
 
@@ -175,6 +184,7 @@ python .\scripts\henry_image.py quick_validate
 - Missing configuration: confirm all four `HENRY_IMAGE_*` variables are set in the current process.
 - Missing prompt or invalid local input: Henry Image should return a structured `validation_error` instead of a Python traceback.
 - Route validation error: use `--model` for `responses`, `--image-model` for `images`, and both for `auto`.
+- Unsafe redirect or image URL: API authentication never follows a cross-origin redirect; image downloads allow HTTP(S) CDN redirects only when every resolved address is public, and reject HTTPS downgrade, non-HTTP(S) URLs, and non-public targets.
 - Removed legacy advanced flags: if an older command still passes low-value tuning flags, remove them and rerun with the current help output.
 - Readiness check: run `python .\scripts\henry_image.py probe --route auto --model response-model-v1 --image-model image-model-v1`
 - Upstream timeout: Henry Image reports a structured `timeout` error; it does not hide remote unavailability. Retry with a shorter `--timeout` for diagnosis, or treat it as a remote service issue.
