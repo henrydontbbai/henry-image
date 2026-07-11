@@ -93,10 +93,18 @@ def workflow_contract_issues(workflow: object) -> list[str]:
             issues.append(f"{job_name} must define steps")
             continue
 
-        uses = {step.get("uses") for step in steps if isinstance(step, dict)}
-        for action in ("actions/checkout@v7", "actions/setup-python@v6"):
-            if action not in uses:
-                issues.append(f"{job_name} is missing action: {action}")
+        uses = [step.get("uses") for step in steps if isinstance(step, dict)]
+        for action_family, expected_action in (
+            ("actions/checkout", "actions/checkout@v7"),
+            ("actions/setup-python", "actions/setup-python@v6"),
+        ):
+            family_uses = [
+                action
+                for action in uses
+                if isinstance(action, str) and action.startswith(f"{action_family}@")
+            ]
+            if family_uses != [expected_action]:
+                issues.append(f"{job_name} must use exactly one {expected_action}")
 
         runs = {step.get("run") for step in steps if isinstance(step, dict)}
         for command in EXPECTED_WORKFLOW_COMMANDS[job_name]:
@@ -106,6 +114,12 @@ def workflow_contract_issues(workflow: object) -> list[str]:
         if job_name in PYTEST_WORKFLOW_JOBS:
             if "python -m pip install pytest -r requirements-test.txt" not in runs:
                 issues.append(f"{job_name} must install test requirements")
+        elif job_name == "smoke" and any(
+            isinstance(command, str)
+            and ("pip install" in command or "requirements-test.txt" in command)
+            for command in runs
+        ):
+            issues.append("smoke must not install test dependencies")
 
         if job_name in EXPECTED_WORKFLOW_MATRICES:
             strategy = job.get("strategy")
@@ -300,6 +314,29 @@ def test_ci_workflow_rejects_duplicate_matrix_version():
     ]
 
     assert "test must keep the expected Python matrix without duplicates" in workflow_contract_issues(workflow)
+
+
+def test_ci_workflow_rejects_legacy_action_majors():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["test"]["steps"].extend(
+        [
+            {"uses": "actions/checkout@v4"},
+            {"uses": "actions/setup-python@v5"},
+        ]
+    )
+
+    issues = workflow_contract_issues(workflow)
+    assert "test must use exactly one actions/checkout@v7" in issues
+    assert "test must use exactly one actions/setup-python@v6" in issues
+
+
+def test_ci_workflow_rejects_smoke_dependency_install():
+    workflow = deepcopy(load_ci_workflow())
+    workflow["jobs"]["smoke"]["steps"].append(
+        {"run": "python -m pip install pytest -r requirements-test.txt"}
+    )
+
+    assert "smoke must not install test dependencies" in workflow_contract_issues(workflow)
 
 
 def test_ci_workflow_rejects_command_only_in_comment():
