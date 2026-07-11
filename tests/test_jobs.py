@@ -574,6 +574,44 @@ def test_legacy_job_cancel_refuses_unverified_identity_without_signalling():
     assert payload["error"]["category"] == "identity_unverified"
 
 
+def test_macos_job_cancel_refuses_unverified_identity_without_signalling():
+    module = load_module()
+    stdout = io.StringIO()
+
+    class MacOSProxy:
+        name = "posix"
+
+        def __getattr__(self, attribute):
+            return getattr(os, attribute)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        job_dir = write_job(root, job_status="running", extra_metadata={"pid": 123})
+        job_file = job_dir / "job.json"
+        before = job_file.read_text(encoding="utf-8")
+        args = argparse.Namespace(job=str(job_dir), jobs_dir=None, dry_run=False)
+
+        with patched(module, "os", MacOSProxy()):
+            with patched(module.sys, "platform", "darwin"):
+                assert module.process_identity(123) is None
+                with patched(module, "infer_job_state", lambda *_args: ("running", None)):
+                    with patched(
+                        module,
+                        "send_verified_termination",
+                        lambda *_args: (_ for _ in ()).throw(AssertionError("must not signal")),
+                    ):
+                        with contextlib.redirect_stdout(stdout):
+                            code = module.command_job_cancel(args)
+
+        after = job_file.read_text(encoding="utf-8")
+
+    payload = json.loads(stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "identity_unverified"
+    assert payload["error"]["code"] == "identity_unverified"
+    assert after == before
+
+
 @pytest.mark.parametrize(
     ("wait_result", "expected_status"),
     [

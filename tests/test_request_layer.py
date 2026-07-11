@@ -549,6 +549,65 @@ def test_validated_image_connection_uses_selected_ip_without_dns_lookup():
     assert calls["address"] == ("93.184.216.34", 443)
 
 
+def test_validated_https_connection_keeps_hostname_for_sni_and_host_header():
+    _mod, request_module = load_request_module()
+    calls = {}
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            calls["timeout"] = timeout
+
+        def setsockopt(self, level, option, value):
+            calls["socketopt"] = (level, option, value)
+
+        def connect(self, address):
+            calls["address"] = address
+
+        def close(self):
+            calls["closed"] = True
+
+    class FakeTLSSocket:
+        def __init__(self):
+            self.written = []
+
+        def sendall(self, data):
+            self.written.append(data)
+
+    tls_socket = FakeTLSSocket()
+    raw_socket = FakeSocket()
+
+    class FakeTLSContext:
+        def wrap_socket(self, sock, *, server_hostname):
+            calls["tcp_socket"] = sock
+            calls["server_hostname"] = server_hostname
+            return tls_socket
+
+    def fake_socket(*_args):
+        calls["raw_socket"] = raw_socket
+        return raw_socket
+
+    with patched(request_module.socket, "socket", fake_socket):
+        connection = request_module.ValidatedImageHTTPSConnection(
+            "cdn.example",
+            443,
+            connect_host="93.184.216.34",
+            context=FakeTLSContext(),
+            timeout=5,
+        )
+        connection.connect()
+        assert connection.sock is tls_socket
+        connection.putrequest("GET", "/result.png")
+        connection.endheaders()
+
+    assert calls["address"] == ("93.184.216.34", 443)
+    assert calls["raw_socket"] is raw_socket
+    assert calls["tcp_socket"] is raw_socket
+    assert calls["server_hostname"] == "cdn.example"
+    request_bytes = b"".join(tls_socket.written)
+    assert b"Host: cdn.example\r\n" in request_bytes
+    assert b"93.184.216.34" not in request_bytes
+
+
 def test_request_json_returns_structured_error_for_invalid_json_body():
     mod, request_module = load_request_module()
     response = FakeResponse(
