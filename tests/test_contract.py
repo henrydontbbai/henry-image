@@ -69,16 +69,24 @@ class FakeResponse:
         self._read_exc = read_exc
         self.headers = headers or {}
 
-    def read(self):
+    def read(self, size=-1):
         if self._read_exc is not None:
             raise self._read_exc
-        return self._body
+        return self._body[:size] if size >= 0 else self._body
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+class FakeOpener:
+    def __init__(self, callback):
+        self.callback = callback
+
+    def open(self, target, timeout):
+        return self.callback(target, timeout=timeout)
 
 
 def test_generate_responses_requires_explicit_model():
@@ -181,6 +189,16 @@ def test_removed_public_commands_and_flags_are_hidden():
             assert marker_text not in probe.stdout
 
 
+def test_top_level_help_uses_non_required_subparser_for_python_39_compatibility():
+    module = load_module()
+    parser = module.build_parser()
+    subparser_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert subparser_action.required is False
+
+
 def test_removed_advanced_flags_are_rejected_by_generate_cli():
     removed_flags = {
         "--images-compat": "auto",
@@ -255,6 +273,7 @@ def test_build_images_payload_keeps_only_supported_advanced_images_options():
 
     assert payload["response_format"] == "url"
     assert payload["output_compression"] == 85
+    assert payload["quality"] == "medium"
     for removed_field in (
         "images_compat",
         "input_fidelity",
@@ -266,6 +285,187 @@ def test_build_images_payload_keeps_only_supported_advanced_images_options():
         assert removed_field not in payload
 
 
+def test_images_edit_multipart_keeps_supported_output_options():
+    mod = load_module()
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        quality="high",
+        output_format="webp",
+        images_response_format="url",
+        output_compression=77,
+        n=2,
+    )
+    captured = {}
+
+    def fake_request_multipart(_url, _headers, fields, _files, _timeout, _result_type):
+        captured.update(fields)
+        return mod.ApiResult(
+            False,
+            400,
+            None,
+            {"status": 400, "message": "stop after capture"},
+            None,
+            0,
+        )
+
+    with patched(mod, "request_multipart", fake_request_multipart):
+        mod.attempt_route(
+            route="images",
+            command="henry.edit",
+            args=args,
+            prompt=args.prompt,
+            out=args.out,
+            config={
+                "base_url": "https://images.example/v1",
+                "base_url_source": "cli",
+                "api_key": "secret",
+                "auth_source": "TEST",
+            },
+            edit_inputs=[{"type": "input_image", "image": "data:image/png;base64,eA=="}],
+            multipart_files=[],
+        )
+
+    assert captured == {
+        "model": "image-service",
+        "prompt": args.prompt,
+        "size": "1024x1024",
+        "n": "2",
+        "quality": "high",
+        "output_format": "webp",
+        "response_format": "url",
+        "output_compression": "77",
+    }
+
+
+def test_responses_route_rejects_multiple_outputs_before_request():
+    mod = load_module()
+    stdout = io.StringIO()
+    args = base_args(
+        route="responses",
+        model="response-service",
+        image_model="image-service",
+        base_url="https://images.example/v1",
+        n=2,
+    )
+
+    with patched(mod, "request_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("request should not run"))):
+        with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("secret", "TEST")):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "unsupported_output_count"
+    assert payload["error"]["category"] == "validation_error"
+
+
+def test_auto_route_rejects_multiple_outputs_before_fallback():
+    mod = load_module()
+    stdout = io.StringIO()
+    args = base_args(
+        route="auto",
+        model="response-service",
+        image_model="image-service",
+        base_url="https://images.example/v1",
+        n=2,
+    )
+
+    with patched(mod, "attempt_route", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("route should not run"))):
+        with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("secret", "TEST")):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "unsupported_output_count"
+
+
+def test_invalid_base_url_is_rejected_by_probe():
+    mod = load_module()
+    stdout = io.StringIO()
+    args = base_args(route="responses", model="response-service", base_url="not-a-url", live=False)
+
+    with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("secret", "TEST")):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_probe(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert "http" in payload["error"]["message"].lower()
+
+
+def test_base_url_rejects_empty_query_fragment_and_params():
+    mod = load_module()
+
+    for value in (
+        "https://images.example/v1?",
+        "https://images.example/v1#",
+        "https://images.example/v1;",
+    ):
+        try:
+            mod.normalize_base_url(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected base URL rejection: {value}")
+
+
+def test_failure_envelope_keeps_status_and_error_category_equal():
+    mod = load_module()
+
+    validation = mod.validation_failure_payload(command="henry.generate", message="bad input")
+    no_image = mod.envelope(
+        ok=False,
+        command="henry.generate",
+        status="no_image_result",
+        provider={"type": "henry-remote-service"},
+        error_obj={"code": "no_image_result", "message": "none"},
+    )
+
+    assert validation["error"]["category"] == validation["status"]
+    assert no_image["error"]["category"] == no_image["status"]
+
+
+def test_remote_image_bytes_must_match_requested_format():
+    mod = load_module()
+    fake_result = mod.ApiResult(
+        True,
+        200,
+        {"output": [{"type": "image_generation_call", "result": base64.b64encode(b"not-a-png").decode("ascii")}]},
+        None,
+        "req-format",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args = base_args(
+            route="responses",
+            model="response-service",
+            image_model="image-service",
+            base_url="https://images.example/v1",
+            output_format="png",
+            out=str(root / "broken.png"),
+        )
+        with patched(mod, "SKILL_CACHE_ROOT", root / ".cache"):
+            with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("secret-key", "TEST")):
+                with patched(mod, "request_json", lambda *_args, **_kwargs: fake_result):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
+
+        payload = read_payload(code, stdout.getvalue())
+        assert code == 1
+        assert payload["status"] == "validation_error"
+        assert payload["error"]["code"] == "invalid_image_format"
+        assert payload["error"]["category"] == "validation_error"
+        assert not (root / "broken.png").exists()
+
+
 def test_probe_live_timeout_returns_structured_error_instead_of_traceback():
     mod = load_module()
     request_module = sys.modules[mod.request_json.__module__]
@@ -275,7 +475,11 @@ def test_probe_live_timeout_returns_structured_error_instead_of_traceback():
     def fake_urlopen(*_args, **_kwargs):
         raise TimeoutError("The read operation timed out")
 
-    with patched(request_module.request, "urlopen", fake_urlopen):
+    with patched(
+        request_module.request,
+        "build_opener",
+        lambda *_handlers: FakeOpener(fake_urlopen),
+    ):
         with patched_env(
             HENRY_IMAGE_BASE_URL="https://images.example/v1",
             HENRY_IMAGE_API_KEY="secret-key",
@@ -304,9 +508,18 @@ def test_edit_remote_input_timeout_returns_structured_error():
     def fake_urlopen(*_args, **_kwargs):
         raise TimeoutError("The read operation timed out")
 
-    with patched(request_module.request, "urlopen", fake_urlopen):
-        with contextlib.redirect_stdout(stdout):
-            code = mod.command_edit(args)
+    with patched(
+        request_module,
+        "resolve_public_image_url",
+        lambda _url: ("example.com", 443, "93.184.216.34"),
+    ):
+        with patched(
+            request_module.request,
+            "build_opener",
+            lambda *_handlers: FakeOpener(fake_urlopen),
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_edit(args)
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
@@ -324,7 +537,11 @@ def test_probe_live_read_timeout_returns_structured_error():
     def fake_urlopen(*_args, **_kwargs):
         return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
 
-    with patched(request_module.request, "urlopen", fake_urlopen):
+    with patched(
+        request_module.request,
+        "build_opener",
+        lambda *_handlers: FakeOpener(fake_urlopen),
+    ):
         with patched_env(
             HENRY_IMAGE_BASE_URL="https://images.example/v1",
             HENRY_IMAGE_API_KEY="secret-key",
@@ -337,6 +554,32 @@ def test_probe_live_read_timeout_returns_structured_error():
     assert payload["status"] == "timeout"
     assert payload["error"]["category"] == "timeout"
     assert "timed out" in payload["error"]["message"].lower()
+
+
+def test_generate_oversized_response_returns_structured_validation_error():
+    mod = load_module()
+    request_module = sys.modules[mod.request_json.__module__]
+    args = base_args(route="responses", model="response-service", image_model="image-service")
+    stdout = io.StringIO()
+    response = FakeResponse(
+        body=b"x" * (request_module.MAX_API_RESPONSE_BYTES + 1),
+        headers={"x-request-id": "req-too-large"},
+    )
+
+    with patched(request_module, "safe_urlopen", lambda *_args, **_kwargs: response):
+        with patched_env(
+            HENRY_IMAGE_BASE_URL="https://images.example/v1",
+            HENRY_IMAGE_API_KEY="secret-key",
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "response_too_large"
+    assert payload["error"]["category"] == "validation_error"
+    assert payload["request_id"] == "req-too-large"
 
 
 def test_edit_remote_input_http_error_returns_structured_error():
@@ -359,9 +602,18 @@ def test_edit_remote_input_http_error_returns_structured_error():
             fp=io.BytesIO(b"Not Found"),
         )
 
-    with patched(request_module.request, "urlopen", fake_urlopen):
-        with contextlib.redirect_stdout(stdout):
-            code = mod.command_edit(args)
+    with patched(
+        request_module,
+        "resolve_public_image_url",
+        lambda _url: ("example.com", 443, "93.184.216.34"),
+    ):
+        with patched(
+            request_module.request,
+            "build_opener",
+            lambda *_handlers: FakeOpener(fake_urlopen),
+        ):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_edit(args)
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
@@ -383,7 +635,11 @@ def test_edit_images_route_read_timeout_returns_structured_error():
     def fake_urlopen(*_args, **_kwargs):
         return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
 
-    with patched(request_module.request, "urlopen", fake_urlopen):
+    with patched(
+        request_module.request,
+        "build_opener",
+        lambda *_handlers: FakeOpener(fake_urlopen),
+    ):
         with patched_env(
             HENRY_IMAGE_BASE_URL="https://images.example/v1",
             HENRY_IMAGE_API_KEY="secret-key",
@@ -418,13 +674,22 @@ def test_generate_images_result_url_timeout_returns_structured_error():
         return FakeResponse(read_exc=TimeoutError("The read operation timed out"))
 
     with patched(mod, "request_json", fake_request_json):
-        with patched(request_module.request, "urlopen", fake_urlopen):
-            with patched_env(
-                HENRY_IMAGE_BASE_URL="https://images.example/v1",
-                HENRY_IMAGE_API_KEY="secret-key",
+        with patched(
+            request_module,
+            "resolve_public_image_url",
+            lambda _url: ("example.com", 443, "93.184.216.34"),
+        ):
+            with patched(
+                request_module.request,
+                "build_opener",
+                lambda *_handlers: FakeOpener(fake_urlopen),
             ):
-                with contextlib.redirect_stdout(stdout):
-                    code = mod.command_generate(args)
+                with patched_env(
+                    HENRY_IMAGE_BASE_URL="https://images.example/v1",
+                    HENRY_IMAGE_API_KEY="secret-key",
+                ):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
@@ -459,13 +724,22 @@ def test_generate_images_result_url_http_error_returns_structured_error():
         )
 
     with patched(mod, "request_json", fake_request_json):
-        with patched(request_module.request, "urlopen", fake_urlopen):
-            with patched_env(
-                HENRY_IMAGE_BASE_URL="https://images.example/v1",
-                HENRY_IMAGE_API_KEY="secret-key",
+        with patched(
+            request_module,
+            "resolve_public_image_url",
+            lambda _url: ("example.com", 443, "93.184.216.34"),
+        ):
+            with patched(
+                request_module.request,
+                "build_opener",
+                lambda *_handlers: FakeOpener(fake_urlopen),
             ):
-                with contextlib.redirect_stdout(stdout):
-                    code = mod.command_generate(args)
+                with patched_env(
+                    HENRY_IMAGE_BASE_URL="https://images.example/v1",
+                    HENRY_IMAGE_API_KEY="secret-key",
+                ):
+                    with contextlib.redirect_stdout(stdout):
+                        code = mod.command_generate(args)
 
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
@@ -562,6 +836,7 @@ def test_batch_task_missing_prompt_returns_partial_failure_instead_of_traceback(
     payload = read_payload(code, stdout.getvalue())
     assert code == 1
     assert payload["status"] == "partial_failure"
+    assert payload["error"]["category"] == payload["status"]
     first_result = payload["outputs"][0]["results"][0]["result"]
     assert first_result["status"] == "validation_error"
     assert "missing prompt" in first_result["error"]["message"].lower()
@@ -917,6 +1192,44 @@ def test_quick_validate_reports_missing_required_files():
     assert "Missing required file: CONTRIBUTING.md" in payload["outputs"][0]["issues"]
 
 
+def test_release_process_validation_requires_version_source_and_all_ci_platforms():
+    mod = load_module()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        release_doc = root / "docs" / "release-process.md"
+        release_doc.parent.mkdir(parents=True)
+        release_doc.write_text(
+            "\n".join(
+                (
+                    "# Release Process",
+                    "Patch",
+                    "Minor",
+                    "Major",
+                    "vX.Y.Z",
+                    "python -m pytest -q",
+                    "python .\\scripts\\henry_image.py quick_validate",
+                    "OpenCode",
+                    "git tag",
+                    "GitHub Release",
+                    "optional",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        with patched(mod, "SKILL_ROOT", root):
+            issues = mod.release_process_issues()
+
+    for marker in (
+        "scripts/henry_image_core/version.py",
+        "Ubuntu",
+        "Windows",
+        "macOS",
+    ):
+        assert any(marker in issue for issue in issues)
+
+
 def test_quick_validate_reports_removed_help_markers():
     mod = load_module()
     stdout = io.StringIO()
@@ -1035,3 +1348,144 @@ def test_generate_dry_run_cli_does_not_require_api_key():
         payload = json.loads(proc.stdout)
         assert payload["status"] == "dry_run"
         assert payload["metadata"]["auth_source"] == "not_required_for_dry_run"
+
+
+def test_background_dry_run_is_rejected_before_starting_a_job():
+    mod = load_module()
+    args = base_args(
+        background_job=True,
+        dry_run=True,
+        route="images",
+        image_model="image-service",
+    )
+    stdout = io.StringIO()
+
+    with patched(
+        mod,
+        "start_background_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not start a child process")),
+    ):
+        with contextlib.redirect_stdout(stdout):
+            code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "incompatible_flags"
+
+
+def test_malformed_success_response_returns_structured_invalid_response_data():
+    mod = load_module()
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        base_url="https://images.example/v1",
+        out="output/imagegen/invalid-shape.png",
+    )
+    result = mod.ApiResult(
+        True,
+        200,
+        {"data": None},
+        None,
+        "req-invalid-shape",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("test-secret", "HENRY_IMAGE_API_KEY")):
+        with patched(mod, "request_json", lambda *_args, **_kwargs: result):
+            with contextlib.redirect_stdout(stdout):
+                code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "invalid_response_data"
+    assert payload["request_id"] == "req-invalid-shape"
+
+
+def test_output_write_failure_returns_structured_error():
+    mod = load_module()
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        base_url="https://images.example/v1",
+        out="output/imagegen/unwritable.png",
+    )
+    result = mod.ApiResult(
+        True,
+        200,
+        {"data": [{"b64_json": base64.b64encode(b"\x89PNG\r\n\x1a\nimage").decode("ascii")}]},
+        None,
+        "req-output-failure",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("test-secret", "HENRY_IMAGE_API_KEY")):
+        with patched(mod, "request_json", lambda *_args, **_kwargs: result):
+            with patched(
+                mod,
+                "write_output_bundle",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "output_write_failed"
+    assert payload["request_id"] == "req-output-failure"
+
+
+def test_output_validation_failure_returns_output_write_failed():
+    mod = load_module()
+    args = base_args(
+        route="images",
+        image_model="image-service",
+        base_url="https://images.example/v1",
+        out="output/imagegen/conflict.png",
+    )
+    result = mod.ApiResult(
+        True,
+        200,
+        {"data": [{"b64_json": base64.b64encode(b"\x89PNG\r\n\x1a\nimage").decode("ascii")}]},
+        None,
+        "req-output-conflict",
+        0,
+    )
+    stdout = io.StringIO()
+
+    with patched(mod, "resolve_api_key", lambda *_args, **_kwargs: ("test-secret", "HENRY_IMAGE_API_KEY")):
+        with patched(mod, "request_json", lambda *_args, **_kwargs: result):
+            with patched(
+                mod,
+                "write_output_bundle",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("Manifest already exists.")),
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = mod.command_generate(args)
+
+    payload = read_payload(code, stdout.getvalue())
+    assert code == 1
+    assert payload["status"] == "validation_error"
+    assert payload["error"]["code"] == "output_write_failed"
+    assert payload["request_id"] == "req-output-conflict"
+
+
+def test_base_url_rejects_whitespace_backslash_and_encoded_newlines():
+    mod = load_module()
+
+    for value in (
+        "https://exa mple.com/v1",
+        "https://example.com\\evil",
+        "https://example.com/%0aevil",
+        "https://example.com/\nevil",
+    ):
+        try:
+            mod.normalize_base_url(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected unsafe base URL rejection: {value!r}")

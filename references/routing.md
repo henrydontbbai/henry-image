@@ -19,6 +19,8 @@
 - `responses` requires `model`
 - `images` requires `image-model`
 - `auto` requires both
+- `responses` and `auto` require `--n 1`
+- use `images` when requesting multiple outputs
 
 ## Fallback policy for `auto`
 
@@ -41,6 +43,8 @@
 - `validation_error`
 - `bad_parameter`
 - `missing_configuration`
+
+Authenticated API requests follow redirects only when scheme, hostname, and effective port remain the same. Image downloads may follow cross-origin HTTP(S) CDN redirects only through public addresses; they reject HTTPS downgrade, non-HTTP(S) schemes, and loopback, private, link-local, multicast, reserved, or other non-public targets.
 
 ## Configuration priority
 

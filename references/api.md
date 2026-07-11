@@ -31,6 +31,7 @@
 - `responses` needs `--model`
 - `images` needs `--image-model`
 - `auto` needs both
+- `responses` and `auto` accept only `--n 1`; use `images` for multiple outputs
 
 ## Stable stdout contract
 
@@ -61,6 +62,26 @@ Validation failures may emit only partial metadata such as `workflow`, `replay_c
 
 `workflow_profile` may still appear in `metadata`, but it is diagnostic information and is not a compatibility promise.
 
+## Reliability statuses and error codes
+
+Background job operations may return `identity_unverified`, `cancel_pending`, or `cancel_failed`.
+
+Reliability validation and local operation failures use these codes:
+
+- `unsafe_redirect`
+- `unsafe_image_url`
+- `invalid_response_data`
+- `unsupported_output_count`
+- `invalid_image_format`
+- `incompatible_flags`
+- `output_write_failed`
+- `invalid_job_metadata`
+- `cleanup_failed`
+- `response_too_large`
+- `job_start_failed`
+
+`unsafe_image_url` also covers image URLs or redirect targets that resolve to loopback, private, link-local, multicast, reserved, or other non-public addresses.
+
 ## Active advanced images options
 
 The only public route-specific advanced images options are:
@@ -70,6 +91,7 @@ The only public route-specific advanced images options are:
 
 These options only affect requests sent through the `images` route.
 `--output-compression` applies only to `jpeg` or `webp` output there.
+Images generate sends `quality`; Images edit also sends supported output format, response format, and compression fields.
 
 ## Output files
 
@@ -77,6 +99,10 @@ Successful image runs write:
 
 - one or more local image files
 - one manifest next to the output
+
+PNG, JPEG, and WebP bytes must match the requested format. Image files and the manifest are staged in the destination directory and committed together, with rollback on failure.
+
+Successful HTTP responses must contain the expected object/list shapes. Malformed response fields return `validation_error / invalid_response_data`; local output commit failures return `validation_error / output_write_failed`.
 
 ## Generate example
 
@@ -107,12 +133,12 @@ Successful image runs write:
     "auth_source": "HENRY_IMAGE_API_KEY",
     "auth_shape": "bearer",
     "base_url_source": "HENRY_IMAGE_BASE_URL",
-    "replay_command": "python scripts/henry_image.py generate --prompt 'A clean product photo of a ceramic cup' --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/cup.png",
+    "replay_command": "python scripts/henry_image.py generate --prompt 'A clean product photo of a ceramic cup' --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --force --out output/imagegen/cup.png",
     "next_action": "Review the generated image and reuse this command as the starting point for the next variation.",
     "workflow": {
       "mode": "generate",
       "stage": "review",
-      "replay_command": "python scripts/henry_image.py generate --prompt 'A clean product photo of a ceramic cup' --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/cup.png",
+      "replay_command": "python scripts/henry_image.py generate --prompt 'A clean product photo of a ceramic cup' --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --force --out output/imagegen/cup.png",
       "source_output": null,
       "next_action": "Review the generated image and reuse this command as the starting point for the next variation."
     },
@@ -190,14 +216,14 @@ Successful image runs write:
     "category": "validation_error"
   },
   "metadata": {
-    "replay_command": "python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/henry-image.png",
-    "next_action": "Fix the blocker and rerun: python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/henry-image.png",
+    "replay_command": "python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --out output/imagegen/henry-image.png",
+    "next_action": "Fix the blocker and rerun: python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --out output/imagegen/henry-image.png",
     "workflow": {
       "mode": "generate",
       "stage": "setup",
-      "replay_command": "python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/henry-image.png",
+      "replay_command": "python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --out output/imagegen/henry-image.png",
       "source_output": null,
-      "next_action": "Fix the blocker and rerun: python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --out output/imagegen/henry-image.png"
+      "next_action": "Fix the blocker and rerun: python scripts/henry_image.py generate --size 1024x1024 --quality medium --route responses --model response-model-v1 --image-model image-model-v1 --output-format png --n 1 --timeout 600 --images-response-format auto --out output/imagegen/henry-image.png"
     }
   }
 }
@@ -209,4 +235,6 @@ Keep diagnostics factual:
 
 - configuration errors should say exactly what is missing
 - network or service errors should keep the remote response category
+- failure envelopes keep `error.category` equal to top-level `status`
+- successful HTTP responses must contain a JSON object
 - no secret values should appear in stdout, stderr, or manifests

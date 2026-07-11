@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import shlex
+import sys
 from typing import Any
 
 
@@ -86,8 +89,14 @@ def infer_workflow_stage(ok: bool, status: str, *, dry_run: bool = False) -> str
     return "retry"
 
 
+def powershell_quote(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./:\\-]+", value):
+        return value
+    return "'" + value.replace("'", "''") + "'"
+
+
 def build_replay_command(args: Any, out: str, command_name: str) -> str:
-    parts = ["python", "scripts/henry_image.py", command_name]
+    parts = [sys.executable or "python", "scripts/henry_image.py", command_name]
     prompt = getattr(args, "prompt", None)
     prompt_file = getattr(args, "prompt_file", None)
     if prompt:
@@ -102,15 +111,36 @@ def build_replay_command(args: Any, out: str, command_name: str) -> str:
         value = getattr(args, field, None)
         if value:
             parts.extend([f"--{field.replace('_', '-')}", str(value)])
-    for field in ("size", "quality", "route", "model", "image_model", "output_format", "base_url", "api_key_env"):
+    for field in (
+        "size",
+        "quality",
+        "route",
+        "model",
+        "image_model",
+        "output_format",
+        "base_url",
+        "api_key_env",
+        "n",
+        "timeout",
+        "images_response_format",
+        "output_compression",
+    ):
         value = getattr(args, field, None)
-        if value:
+        if value is not None:
             parts.extend([f"--{field.replace('_', '-')}", str(value)])
+    if getattr(args, "force", False):
+        parts.append("--force")
     if out:
         if command_name == "batch":
+            batch_input = getattr(args, "batch_input", None)
+            if batch_input:
+                parts.extend(["--batch-input", str(batch_input)])
             parts.extend(["--out-dir", out])
         else:
             parts.extend(["--out", out])
+    if os.name == "nt":
+        command = " ".join(powershell_quote(part) for part in parts)
+        return f"& {command}" if command.startswith("'") else command
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -176,16 +206,20 @@ def attach_workflow_metadata(
     metadata.setdefault("replay_command", workflow["replay_command"])
     if result.get("ok") and persist_on_success and str(result.get("status")) not in {"dry_run", "skipped"}:
         provider = (result.get("provider") or {}).get("base_url_source") or (result.get("provider") or {}).get("type")
-        profile = update_workflow_profile(
-            cache_root,
-            mode=mode,
-            out=out,
-            size=getattr(args, "size", None),
-            quality=getattr(args, "quality", None),
-            output_format=getattr(args, "output_format", None),
-            route=getattr(args, "route", None),
-            provider=str(provider) if provider else None,
-        )
+        try:
+            profile = update_workflow_profile(
+                cache_root,
+                mode=mode,
+                out=out,
+                size=getattr(args, "size", None),
+                quality=getattr(args, "quality", None),
+                output_format=getattr(args, "output_format", None),
+                route=getattr(args, "route", None),
+                provider=str(provider) if provider else None,
+            )
+        except (OSError, UnicodeError):
+            profile = load_workflow_profile(cache_root)
+            metadata["workflow_profile_error"] = "Workflow profile cache could not be updated."
         metadata["workflow_profile"] = profile
     else:
         metadata["workflow_profile"] = load_workflow_profile(cache_root)

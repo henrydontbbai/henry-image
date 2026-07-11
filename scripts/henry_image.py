@@ -33,6 +33,8 @@ from henry_image_core.jobs import job_id as build_job_id
 from henry_image_core.jobs import job_root, parse_duration_seconds, resolve_job_path
 from henry_image_core.prompts import build_prompt_package_v2, compile_prompt_task
 from henry_image_core.request import (
+    ImageFormatError,
+    InvalidResponseDataError,
     NetworkOperationError,
     classify_api_failure,
     decode_image_b64,
@@ -41,15 +43,13 @@ from henry_image_core.request import (
     failure_error_obj,
     request_json,
     request_multipart,
-    write_image_bytes,
-    write_manifest,
+    write_output_bundle,
 )
 from henry_image_core.validate import read_prompt, validate_common
+from henry_image_core.version import HENRY_IMAGE_DISPLAY_NAME, HENRY_IMAGE_VERSION
 from henry_image_core.workflow import attach_workflow_metadata
 
 
-HENRY_IMAGE_VERSION = "1.0.0"
-HENRY_IMAGE_DISPLAY_NAME = f"Henry Image V{HENRY_IMAGE_VERSION}"
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
 DEFAULT_OUTPUT_FORMAT = "png"
@@ -154,7 +154,21 @@ def normalize_base_url(value: str) -> str:
     text = value.strip()
     if not text:
         return text
+    if "\\" in text or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValueError("base-url must not include whitespace, control characters, or backslashes.")
+    if re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", text, flags=re.IGNORECASE):
+        raise ValueError("base-url must not include percent-encoded control characters.")
+    if any(delimiter in text for delimiter in ("?", "#", ";")):
+        raise ValueError("base-url must not include params, query, or fragment.")
     parsed = parse.urlparse(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("base-url must be an HTTP(S) URL with a hostname.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("base-url must not include user information.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("base-url contains an invalid port.") from exc
     path = parsed.path.rstrip("/")
     lowered = path.lower()
     for suffix in BASE_ENDPOINT_SUFFIXES:
@@ -227,6 +241,14 @@ def envelope(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
+    if not ok and error_obj is None:
+        error_obj = {
+            "code": status,
+            "message": f"Command ended with status {status}.",
+        }
+    error = failure_error_obj(error_obj) if error_obj else None
+    if error is not None and not ok:
+        error["category"] = status
     return {
         "ok": ok,
         "status": status,
@@ -234,9 +256,13 @@ def envelope(
         "provider": provider,
         "request_id": request_id,
         "outputs": outputs or [],
-        "error": failure_error_obj(error_obj) if error_obj else None,
+        "error": error,
         "metadata": metadata or {},
     }
+
+
+class InvalidJobMetadataError(ValueError):
+    pass
 
 
 def provider_info(base_url: str | None, *, route: str | None = None, base_url_source: str | None = None) -> dict[str, Any]:
@@ -338,6 +364,7 @@ def validation_failure_payload(
     *,
     command: str,
     message: str,
+    code: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return envelope(
@@ -345,7 +372,7 @@ def validation_failure_payload(
         command=command,
         status="validation_error",
         provider={"type": "henry-local-validator"},
-        error_obj={"message": message},
+        error_obj={"code": code, "message": message, "category": "validation_error"},
         metadata=metadata,
     )
 
@@ -365,6 +392,73 @@ def remote_image_data_failure_payload(
         error_obj={
             "code": "invalid_image_data",
             "message": "Remote service returned invalid image data.",
+            "category": "validation_error",
+        },
+        metadata=metadata,
+        request_id=request_id,
+    )
+
+
+def remote_image_format_failure_payload(
+    *,
+    command: str,
+    provider: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="validation_error",
+        provider=provider,
+        error_obj={
+            "code": "invalid_image_format",
+            "message": "Remote image bytes do not match the requested output format.",
+            "category": "validation_error",
+        },
+        metadata=metadata,
+        request_id=request_id,
+    )
+
+
+def remote_invalid_response_data_failure_payload(
+    *,
+    command: str,
+    provider: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="validation_error",
+        provider=provider,
+        error_obj={
+            "code": "invalid_response_data",
+            "message": "Remote service returned invalid response data.",
+            "category": "validation_error",
+        },
+        metadata=metadata,
+        request_id=request_id,
+    )
+
+
+def output_write_failure_payload(
+    *,
+    command: str,
+    provider: dict[str, Any],
+    message: str,
+    metadata: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="validation_error",
+        provider=provider,
+        error_obj={
+            "code": "output_write_failed",
+            "message": message,
             "category": "validation_error",
         },
         metadata=metadata,
@@ -427,6 +521,7 @@ def build_images_payload(prompt: str, args: argparse.Namespace) -> dict[str, Any
         "prompt": prompt,
         "n": args.n,
         "size": args.size,
+        "quality": args.quality,
     }
     if args.images_response_format != "auto":
         payload["response_format"] = args.images_response_format
@@ -570,7 +665,15 @@ def attempt_route(
                 metadata=metadata,
                 request_id=result.request_id,
             )
-        images_b64 = extract_response_images(result.data or {})
+        try:
+            images_b64 = extract_response_images(result.data or {})
+        except InvalidResponseDataError:
+            return remote_invalid_response_data_failure_payload(
+                command=command,
+                provider=provider,
+                metadata=metadata,
+                request_id=result.request_id,
+            )
         if not images_b64:
             return envelope(
                 ok=False,
@@ -590,16 +693,21 @@ def attempt_route(
                 metadata=metadata,
                 request_id=result.request_id,
             )
-        outputs = write_image_bytes(
-            images_raw,
-            out,
-            args.output_format,
-            args.force,
-        )
     else:
         endpoint = config["base_url"] + ("/images/edits" if edit_inputs else "/images/generations")
         if edit_inputs:
-            fields = {"model": args.image_model, "prompt": prompt, "size": args.size, "n": str(args.n)}
+            fields = {
+                "model": args.image_model,
+                "prompt": prompt,
+                "size": args.size,
+                "n": str(args.n),
+                "quality": args.quality,
+                "output_format": args.output_format,
+            }
+            if args.images_response_format != "auto":
+                fields["response_format"] = args.images_response_format
+            if args.output_compression is not None:
+                fields["output_compression"] = str(args.output_compression)
             result = request_multipart(endpoint, headers, fields, multipart_files or [], args.timeout, ApiResult)
         else:
             payload = build_images_payload(prompt, args)
@@ -630,6 +738,13 @@ def attempt_route(
             )
         try:
             images_raw = extract_images_api_images(result.data or {}, timeout=args.timeout, is_data_image_url=is_data_image_url)
+        except InvalidResponseDataError:
+            return remote_invalid_response_data_failure_payload(
+                command=command,
+                provider=provider,
+                metadata=metadata,
+                request_id=result.request_id,
+            )
         except NetworkOperationError as exc:
             return network_failure_payload(
                 command=command,
@@ -654,19 +769,39 @@ def attempt_route(
                 metadata=metadata,
                 request_id=result.request_id,
             )
-        outputs = write_image_bytes(images_raw, out, args.output_format, args.force)
-
-    manifest = create_manifest(
-        command=command,
-        route=route,
-        args=args,
-        config=config,
-        provider=provider,
-        outputs=outputs,
-        request_id=result.request_id,
-        extra_metadata=metadata,
-    )
-    manifest_path = write_manifest(out, manifest, args.force, redact=redact)
+    try:
+        outputs, manifest_path = write_output_bundle(
+            images_raw,
+            out,
+            args.output_format,
+            args.force,
+            manifest_factory=lambda bundle_outputs: create_manifest(
+                command=command,
+                route=route,
+                args=args,
+                config=config,
+                provider=provider,
+                outputs=bundle_outputs,
+                request_id=result.request_id,
+                extra_metadata=metadata,
+            ),
+            redact=redact,
+        )
+    except ImageFormatError:
+        return remote_image_format_failure_payload(
+            command=command,
+            provider=provider,
+            metadata=metadata,
+            request_id=result.request_id,
+        )
+    except (OSError, ValueError) as exc:
+        return output_write_failure_payload(
+            command=command,
+            provider=provider,
+            message=str(exc) or "Failed to write image output files.",
+            metadata=metadata,
+            request_id=result.request_id,
+        )
     enriched = attach_manifest_paths(outputs, manifest_path)
     metadata["request_id"] = result.request_id
     return envelope(
@@ -695,6 +830,12 @@ def run_image_command_result(
         image_response_formats=IMAGE_RESPONSE_FORMATS,
         routes=ROUTES,
     )
+    if args.route in {"responses", "auto"} and args.n > 1:
+        return validation_failure_payload(
+            command=command,
+            code="unsupported_output_count",
+            message="responses and auto routes support only --n 1. Use --route images for multiple outputs.",
+        )
     prompt = read_prompt(args.prompt, args.prompt_file)
     edit_inputs: list[dict[str, Any]] | None = None
     multipart_files: list[tuple[str, str, bytes]] | None = None
@@ -898,15 +1039,110 @@ def build_child_argv(command_name: str, args: argparse.Namespace) -> list[str]:
 
 
 def write_job_metadata(job_dir: Path, metadata: dict[str, Any]) -> None:
-    (job_dir / "job.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    job_file = job_dir / "job.json"
+    serialized = json.dumps(metadata, ensure_ascii=False, indent=2)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=job_dir,
+        prefix="job.json.tmp-",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(serialized)
+    try:
+        os.replace(temp_path, job_file)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def read_job_metadata(job_dir: Path) -> dict[str, Any]:
-    return json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    job_file = job_dir / "job.json"
+    try:
+        metadata = json.loads(job_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidJobMetadataError(f"Invalid job metadata: {job_file}") from exc
+    if not isinstance(metadata, dict):
+        raise InvalidJobMetadataError(f"Invalid job metadata: {job_file}")
+    required_fields = ("job_id", "status", "command", "pid", "created_at", "stdout", "stderr")
+    missing_fields = [field for field in required_fields if field not in metadata]
+    if missing_fields:
+        raise InvalidJobMetadataError(
+            f"Invalid job metadata missing required fields {', '.join(missing_fields)}: {job_file}"
+        )
+    for field in ("job_id", "status", "command", "created_at", "started_at", "job_path", "stdout", "stderr", "out"):
+        if field in metadata and metadata[field] is not None and not isinstance(metadata[field], str):
+            raise InvalidJobMetadataError(f"Invalid job metadata field {field!r}: {job_file}")
+    if "pid" in metadata and (
+        isinstance(metadata["pid"], bool)
+        or not isinstance(metadata["pid"], int)
+        or metadata["pid"] < 0
+        or metadata["pid"] > 2_147_483_647
+    ):
+        raise InvalidJobMetadataError(f"Invalid job metadata field 'pid': {job_file}")
+    identity = metadata.get("process_identity")
+    if identity is not None and (
+        not isinstance(identity, dict)
+        or not isinstance(identity.get("scheme"), str)
+        or not identity.get("scheme")
+        or not isinstance(identity.get("value"), str)
+        or not identity.get("value")
+    ):
+        raise InvalidJobMetadataError(f"Invalid job metadata field 'process_identity': {job_file}")
+    return metadata
+
+
+def invalid_job_metadata_payload(command: str, job_dir: Path, exc: Exception) -> dict[str, Any]:
+    return envelope(
+        ok=False,
+        command=command,
+        status="invalid_job_metadata",
+        provider={"type": "henry-background-job"},
+        error_obj={
+            "code": "invalid_job_metadata",
+            "message": str(exc) or f"Invalid job metadata: {job_dir / 'job.json'}",
+        },
+        metadata={"job_dir": str(job_dir)},
+    )
+
+
+def linux_process_state(pid: int) -> str | None:
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    closing_paren = stat_text.rfind(")")
+    if closing_paren < 0:
+        return None
+    fields_after_name = stat_text[closing_paren + 2 :].split()
+    return fields_after_name[0] if fields_after_name else None
 
 
 def pid_running(pid: int | None) -> bool:
     if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_access = 0x00100000 | 0x1000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(process_access, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+    if sys.platform.startswith("linux") and linux_process_state(pid) == "Z":
         return False
     try:
         os.kill(pid, 0)
@@ -915,38 +1151,234 @@ def pid_running(pid: int | None) -> bool:
     return True
 
 
+def process_identity(pid: int | None) -> dict[str, str] | None:
+    if not pid or pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [
+                ("low", wintypes.DWORD),
+                ("high", wintypes.DWORD),
+            ]
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return None
+        try:
+            creation = FileTime()
+            exit_time = FileTime()
+            kernel_time = FileTime()
+            user_time = FileTime()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                return None
+            value = (int(creation.high) << 32) | int(creation.low)
+            return {"scheme": "windows_filetime", "value": str(value)}
+        finally:
+            kernel32.CloseHandle(handle)
+    if sys.platform.startswith("linux"):
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            closing_paren = stat_text.rfind(")")
+            if closing_paren < 0:
+                return None
+            fields_after_name = stat_text[closing_paren + 2 :].split()
+            return {
+                "scheme": "linux_proc_starttime",
+                "value": fields_after_name[19],
+            }
+        except (OSError, IndexError):
+            return None
+    return None
+
+
+def process_identity_matches(pid: int, expected: dict[str, Any]) -> bool:
+    current = process_identity(pid)
+    return bool(
+        current
+        and current.get("scheme") == expected.get("scheme")
+        and current.get("value") == expected.get("value")
+    )
+
+
+def send_verified_termination(pid: int, expected: dict[str, Any]) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [
+                ("low", wintypes.DWORD),
+                ("high", wintypes.DWORD),
+            ]
+
+        process_terminate = 0x0001
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(
+            process_terminate | process_query_limited_information,
+            False,
+            pid,
+        )
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "Unable to open the job process.")
+        try:
+            creation = FileTime()
+            exit_time = FileTime()
+            kernel_time = FileTime()
+            user_time = FileTime()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                raise OSError(ctypes.get_last_error(), "Unable to verify the job process identity.")
+            current = {
+                "scheme": "windows_filetime",
+                "value": str((int(creation.high) << 32) | int(creation.low)),
+            }
+            if current != expected:
+                raise OSError("Job process identity no longer matches.")
+            if not kernel32.TerminateProcess(handle, 1):
+                raise OSError(ctypes.get_last_error(), "Unable to terminate the job process.")
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+    if sys.platform.startswith("linux"):
+        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+            raise OSError("pidfd process termination is unavailable on this Linux runtime.")
+        pidfd = os.pidfd_open(pid)
+        try:
+            if not process_identity_matches(pid, expected):
+                raise OSError("Job process identity no longer matches.")
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        finally:
+            os.close(pidfd)
+        return
+    raise OSError("Verified process termination is unavailable on this platform.")
+
+
+def wait_for_process_exit(pid: int, expected: dict[str, Any], timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_running(pid) or not process_identity_matches(pid, expected):
+            return True
+        time.sleep(0.05)
+    return not pid_running(pid) or not process_identity_matches(pid, expected)
+
+
 def start_background_job(command_name: str, args: argparse.Namespace) -> int:
     jobs_path = job_root(getattr(args, "jobs_dir", None) or DEFAULT_JOBS_DIR, DEFAULT_JOBS_DIR)
-    jobs_path.mkdir(parents=True, exist_ok=True)
     current_job_id = build_job_id()
     job_dir = jobs_path / current_job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = job_dir / "stdout.json"
     stderr_path = job_dir / "stderr.jsonl"
     argv = build_child_argv(command_name, clone_args(args, background_job=False))
-    with open(stdout_path, "w", encoding="utf-8") as stdout_handle, open(stderr_path, "w", encoding="utf-8") as stderr_handle:
-        process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), *argv],
-            cwd=os.getcwd(),
-            env=os.environ.copy(),
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    process: subprocess.Popen[Any] | None = None
+    job_dir_created = False
+    try:
+        jobs_path.mkdir(parents=True, exist_ok=True)
+        job_dir.mkdir(parents=True)
+        job_dir_created = True
+        with open(stdout_path, "w", encoding="utf-8") as stdout_handle, open(stderr_path, "w", encoding="utf-8") as stderr_handle:
+            process = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), *argv],
+                cwd=os.getcwd(),
+                env=os.environ.copy(),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            identity = process_identity(process.pid)
+        if (os.name == "nt" or sys.platform.startswith("linux")) and identity is None:
+            raise OSError("Unable to capture the background job process identity.")
+        metadata = {
+            "job_id": current_job_id,
+            "status": "running",
+            "command": f"henry.{command_name}",
+            "pid": process.pid,
+            "process_identity": identity,
+            "created_at": now_iso(),
+            "started_at": now_iso(),
+            "job_path": str(job_dir),
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "out": getattr(args, "out", getattr(args, "out_dir", None)),
+            "argv": argv,
+        }
+        write_job_metadata(job_dir, metadata)
+    except OSError as exc:
+        cleanup_errors: list[str] = []
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired) as cleanup_exc:
+                    cleanup_errors.append(str(cleanup_exc) or "Failed to kill the child process.")
+            except OSError as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc) or "Failed to terminate the child process.")
+        if job_dir_created:
+            try:
+                shutil.rmtree(job_dir)
+            except OSError as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc) or "Failed to remove the incomplete job directory.")
+        message = str(exc) or "Failed to start the background job."
+        if cleanup_errors:
+            message = f"{message} Cleanup also failed: {'; '.join(cleanup_errors)}"
+        return emit(
+            envelope(
+                ok=False,
+                command="henry.job.start",
+                status="job_start_failed",
+                provider={"type": "henry-background-job"},
+                error_obj={"code": "job_start_failed", "message": message},
+                metadata={"job_dir": str(job_dir)},
+            )
         )
-    metadata = {
-        "job_id": current_job_id,
-        "status": "running",
-        "command": f"henry.{command_name}",
-        "pid": process.pid,
-        "created_at": now_iso(),
-        "started_at": now_iso(),
-        "job_path": str(job_dir),
-        "stdout": str(stdout_path),
-        "stderr": str(stderr_path),
-        "out": getattr(args, "out", getattr(args, "out_dir", None)),
-        "argv": argv,
-    }
-    write_job_metadata(job_dir, metadata)
     payload = envelope(
         ok=True,
         command="henry.job.start",
@@ -971,24 +1403,56 @@ def load_child_result(job_dir: Path) -> tuple[dict[str, Any] | None, str]:
     stdout_path = job_dir / "stdout.json"
     if not stdout_path.exists():
         return None, "child_no_result"
-    text = stdout_path.read_text(encoding="utf-8").strip()
+    try:
+        text = stdout_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None, "child_invalid_json"
     if not text:
         return None, "child_no_result"
     try:
-        return json.loads(text), "completed"
+        result = json.loads(text)
     except json.JSONDecodeError:
         return None, "child_invalid_json"
+    if not isinstance(result, dict):
+        return None, "child_invalid_json"
+    if not isinstance(result.get("status"), str) or not result["status"]:
+        return None, "child_invalid_json"
+    if result.get("error") is not None and not isinstance(result["error"], dict):
+        return None, "child_invalid_json"
+    return result, "completed"
 
 
 def infer_job_state(job_dir: Path, metadata: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
     result, fallback = load_child_result(job_dir)
+    stored_status = str(metadata.get("status") or "")
     if result is not None:
-        if metadata.get("status") != "cancelled":
+        if stored_status != "cancelled":
             metadata["status"] = result.get("status") or "completed"
-            write_job_metadata(job_dir, metadata)
+            try:
+                write_job_metadata(job_dir, metadata)
+            except OSError:
+                pass
         return str(metadata.get("status") or "completed"), result
-    if pid_running(int(metadata.get("pid") or 0)):
-        return "running", None
+    pid = int(metadata.get("pid") or 0)
+    expected = metadata.get("process_identity")
+    if pid_running(pid):
+        if expected is None or process_identity_matches(pid, expected):
+            if stored_status in {"cancel_pending", "cancel_failed"}:
+                return stored_status, None
+            return "running", None
+    if stored_status == "cancelled":
+        return "cancelled", None
+    if stored_status == "cancel_pending":
+        if not isinstance(expected, dict) or not expected.get("scheme") or not expected.get("value"):
+            return "cancel_pending", None
+        metadata["status"] = "cancelled"
+        try:
+            write_job_metadata(job_dir, metadata)
+        except OSError:
+            pass
+        return "cancelled", None
+    if stored_status == "cancel_failed":
+        return "cancel_failed", None
     return fallback, None
 
 
@@ -1031,9 +1495,12 @@ def command_job_status(args: argparse.Namespace) -> int:
             )
         )
     while True:
-        metadata = read_job_metadata(job_dir)
+        try:
+            metadata = read_job_metadata(job_dir)
+        except InvalidJobMetadataError as exc:
+            return emit(invalid_job_metadata_payload("henry.job.status", job_dir, exc))
         state, result = infer_job_state(job_dir, metadata)
-        if not args.watch or state != "running":
+        if not args.watch or state not in {"running", "cancel_pending"}:
             break
         time.sleep(max(args.interval, 0.1))
     payload = {
@@ -1069,7 +1536,10 @@ def command_job_diagnose(args: argparse.Namespace) -> int:
                 error_obj={"message": f"Job not found: {job_dir}"},
             )
         )
-    metadata = read_job_metadata(job_dir)
+    try:
+        metadata = read_job_metadata(job_dir)
+    except InvalidJobMetadataError as exc:
+        return emit(invalid_job_metadata_payload("henry.job.diagnose", job_dir, exc))
     state, result = infer_job_state(job_dir, metadata)
     diagnosis = build_job_diagnosis(job_dir, metadata, result, state)
     if args.format == "human":
@@ -1112,7 +1582,10 @@ def command_job_cancel(args: argparse.Namespace) -> int:
                 error_obj={"message": f"Job not found: {job_dir}"},
             )
         )
-    metadata = read_job_metadata(job_dir)
+    try:
+        metadata = read_job_metadata(job_dir)
+    except InvalidJobMetadataError as exc:
+        return emit(invalid_job_metadata_payload("henry.job.cancel", job_dir, exc))
     state, _ = infer_job_state(job_dir, metadata)
     plan = [{"pid": metadata.get("pid"), "signal": "SIGTERM"}] if metadata.get("pid") else []
     if args.dry_run:
@@ -1125,7 +1598,7 @@ def command_job_cancel(args: argparse.Namespace) -> int:
                 outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
             )
         )
-    if state != "running":
+    if state not in {"running", "cancel_pending"}:
         return emit(
             envelope(
                 ok=True,
@@ -1135,18 +1608,67 @@ def command_job_cancel(args: argparse.Namespace) -> int:
                 outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
             )
         )
-    if metadata.get("pid"):
+    expected_identity = metadata.get("process_identity")
+    if not isinstance(expected_identity, dict) or not expected_identity.get("scheme") or not expected_identity.get("value"):
+        return emit(
+            envelope(
+                ok=False,
+                command="henry.job.cancel",
+                status="identity_unverified",
+                provider={"type": "henry-background-job"},
+                error_obj={
+                    "code": "identity_unverified",
+                    "message": "The job predates process identity tracking and cannot be cancelled safely.",
+                },
+                outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
+            )
+        )
+    pid = int(metadata.get("pid") or 0)
+    try:
+        send_verified_termination(pid, expected_identity)
+    except OSError as exc:
+        metadata["status"] = "cancel_failed"
+        message = str(exc) or "Failed to terminate the verified job process."
         try:
-            os.kill(int(metadata["pid"]), signal.SIGTERM)
-        except OSError:
-            pass
-    metadata["status"] = "cancelled"
-    write_job_metadata(job_dir, metadata)
+            write_job_metadata(job_dir, metadata)
+        except OSError as write_exc:
+            message = f"{message} Failed to persist the cancellation status: {write_exc}"
+        return emit(
+            envelope(
+                ok=False,
+                command="henry.job.cancel",
+                status="cancel_failed",
+                provider={"type": "henry-background-job"},
+                error_obj={
+                    "code": "cancel_failed",
+                    "message": message,
+                },
+                outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
+            )
+        )
+    final_status = "cancelled" if wait_for_process_exit(pid, expected_identity, timeout=2.0) else "cancel_pending"
+    metadata["status"] = final_status
+    try:
+        write_job_metadata(job_dir, metadata)
+    except OSError as exc:
+        return emit(
+            envelope(
+                ok=False,
+                command="henry.job.cancel",
+                status="cancel_failed",
+                provider={"type": "henry-background-job"},
+                error_obj={
+                    "code": "cancel_failed",
+                    "message": f"Process termination reached {final_status}, but the job status could not be persisted: {exc}",
+                },
+                outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
+            )
+        )
     return emit(
         envelope(
             ok=True,
             command="henry.job.cancel",
-            status="cancelled",
+            status=final_status,
             provider={"type": "henry-background-job"},
             outputs=[{"type": "henry_job_cancel_plan", "cancel_plan": plan}],
         )
@@ -1161,7 +1683,10 @@ def command_job_list(args: argparse.Namespace) -> int:
             job_file = job_dir / "job.json"
             if not job_file.exists():
                 continue
-            metadata = json.loads(job_file.read_text(encoding="utf-8"))
+            try:
+                metadata = read_job_metadata(job_dir)
+            except InvalidJobMetadataError as exc:
+                return emit(invalid_job_metadata_payload("henry.job.list", job_dir, exc))
             jobs.append(
                 {
                     "job_id": metadata.get("job_id"),
@@ -1188,13 +1713,17 @@ def command_job_cleanup(args: argparse.Namespace) -> int:
     except ValueError as exc:
         return emit(validation_failure_payload(command="henry.job.cleanup", message=str(exc)))
     removed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
     now = time.time()
     if jobs_path.exists():
         for job_dir in sorted(path for path in jobs_path.iterdir() if path.is_dir()):
             job_file = job_dir / "job.json"
             if not job_file.exists():
                 continue
-            metadata = json.loads(job_file.read_text(encoding="utf-8"))
+            try:
+                metadata = read_job_metadata(job_dir)
+            except InvalidJobMetadataError as exc:
+                return emit(invalid_job_metadata_payload("henry.job.cleanup", job_dir, exc))
             created_at = metadata.get("created_at")
             if created_at:
                 try:
@@ -1205,15 +1734,42 @@ def command_job_cleanup(args: argparse.Namespace) -> int:
                 created_ts = job_file.stat().st_mtime
             if now - created_ts < threshold:
                 continue
-            removed.append({"job_id": metadata.get("job_id"), "job_dir": str(job_dir)})
-            shutil.rmtree(job_dir, ignore_errors=True)
+            state, _ = infer_job_state(job_dir, metadata)
+            if state in {"running", "cancel_pending"}:
+                continue
+            pid = int(metadata.get("pid") or 0)
+            expected = metadata.get("process_identity")
+            if pid_running(pid) and (
+                expected is None
+                or (
+                    isinstance(expected, dict)
+                    and process_identity_matches(pid, expected)
+                )
+            ):
+                continue
+            item = {"job_id": metadata.get("job_id"), "job_dir": str(job_dir)}
+            try:
+                shutil.rmtree(job_dir)
+            except OSError as exc:
+                failed.append({**item, "message": str(exc) or "Failed to delete the job directory."})
+                continue
+            if job_dir.exists():
+                failed.append({**item, "message": "Job directory still exists after cleanup."})
+                continue
+            removed.append(item)
     return emit(
         envelope(
-            ok=True,
+            ok=not failed,
             command="henry.job.cleanup",
-            status="completed",
+            status="completed" if not failed else "cleanup_failed",
             provider={"type": "henry-background-job"},
-            outputs=[{"type": "henry_job_cleanup", "removed": removed}],
+            outputs=[{"type": "henry_job_cleanup", "removed": removed, "failed": failed}],
+            error_obj=None
+            if not failed
+            else {
+                "code": "cleanup_failed",
+                "message": "One or more job directories could not be removed.",
+            },
         )
     )
 
@@ -1267,6 +1823,7 @@ def missing_required_files() -> list[str]:
         SKILL_ROOT / "references" / "routing.md",
         SKILL_ROOT / "references" / "setup.md",
         SKILL_ROOT / "references" / "runbooks.md",
+        SKILL_ROOT / "scripts" / "henry_image_core" / "version.py",
     ]
     return [str(path.relative_to(SKILL_ROOT)) for path in required if not path.exists()]
 
@@ -1379,10 +1936,12 @@ def maintainer_doc_issues() -> list[str]:
 
 def version_consistency_issues() -> list[str]:
     script_version = HENRY_IMAGE_VERSION
+    major, minor, _patch = script_version.split(".", 2)
     checks = (
         (SKILL_ROOT / "README.md", f"Version: `{script_version}`"),
         (SKILL_ROOT / "SKILL.md", f"V{script_version}"),
         (SKILL_ROOT / "CHANGELOG.md", f"## {script_version} -"),
+        (SKILL_ROOT / "SECURITY.md", f"latest published `{major}.{minor}.x` patch"),
     )
     issues: list[str] = []
     for path, marker in checks:
@@ -1403,9 +1962,11 @@ def ci_workflow_issues() -> list[str]:
         "smoke:",
         "hygiene:",
         "contract:",
+        "macos:",
         "test:",
         "matrix:",
-        'python-version: ["3.11", "3.12"]',
+        'python-version: ["3.9", "3.11", "3.12"]',
+        "runs-on: macos-latest",
         "python ./scripts/henry_image.py --help",
         "python ./scripts/henry_image.py generate --help",
         "python ./scripts/henry_image.py quick_validate",
@@ -1434,6 +1995,10 @@ def release_process_issues() -> list[str]:
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py quick_validate",
         "OpenCode",
+        "scripts/henry_image_core/version.py",
+        "Ubuntu",
+        "Windows",
+        "macOS",
         "git tag",
         "GitHub Release",
         "optional",
@@ -1631,12 +2196,28 @@ def command_prompt(args: argparse.Namespace) -> int:
 
 
 def command_generate(args: argparse.Namespace) -> int:
+    if args.background_job and args.dry_run:
+        return emit(
+            validation_failure_payload(
+                command="henry.generate",
+                code="incompatible_flags",
+                message="--background-job cannot be combined with --dry-run.",
+            )
+        )
     if args.background_job:
         return start_background_job("generate", args)
     return emit(run_image_command_payload(command="henry.generate", args=args, out=args.out))
 
 
 def command_edit(args: argparse.Namespace) -> int:
+    if args.background_job and args.dry_run:
+        return emit(
+            validation_failure_payload(
+                command="henry.edit",
+                code="incompatible_flags",
+                message="--background-job cannot be combined with --dry-run.",
+            )
+        )
     if args.background_job:
         return start_background_job("edit", args)
     return emit(run_image_command_payload(command="henry.edit", args=args, out=args.out))
@@ -1733,7 +2314,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=HENRY_IMAGE_DISPLAY_NAME)
 
-    sub = parser.add_subparsers(dest="subcommand", required=True)
+    sub = parser.add_subparsers(dest="subcommand")
 
     def add_shared_remote_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--base-url", default=None, help="Remote image service base URL.")
@@ -1851,6 +2432,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if not hasattr(args, "func"):
+        parser.error("the following arguments are required: subcommand")
     return int(args.func(args))
 
 

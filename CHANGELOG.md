@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.1 - 2026-07-11
+
+- restrict authenticated API redirects to the same origin and harden image downloads against unsafe schemes, HTTPS downgrade, and URLs resolving to non-public addresses
+- validate base URLs, successful response objects, image signatures, Images API parameters, and multi-output route compatibility with structured errors
+- commit image files and manifests atomically with rollback when overwrite or multi-file submission fails
+- bind background jobs to platform process identities and expose safe cancellation outcomes without signalling unverified legacy jobs
+- preserve reliability and batch arguments in platform-compatible replay commands without exposing API key values
+- synchronize security support, validation, tests, and public documentation with the `1.0.1` release contract
+- reject background dry-run ambiguity, structure malformed success/output errors, atomically persist job metadata, and cover Python 3.9/macOS in CI
+
 ## 1.0.0 - 2026-07-05
 
 - remove low-value public CLI tuning flags: `--images-compat`, `--input-fidelity`, `--background`, `--moderation`, `--partial-images`, and `--retries`
