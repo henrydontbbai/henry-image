@@ -4,7 +4,7 @@
 
 Report security issues privately.
 
-Please avoid filing public issues for security-sensitive reports. Share the report directly with the maintainer through the repository contact method or another private channel already used for project maintenance.
+Submit reports through [GitHub Private Vulnerability Reporting](https://github.com/henrydontbbai/henry-image/security/advisories/new). Please avoid filing public issues for security-sensitive reports.
 
 ## Supported Versions
 
