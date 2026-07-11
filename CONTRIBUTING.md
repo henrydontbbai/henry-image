@@ -7,9 +7,14 @@ Thank you for helping maintain Henry Image.
 Run these commands before opening a pull request:
 
 ```powershell
+python -m pip install pytest -r requirements-test.txt
 python -m pytest -q
 python .\scripts\henry_image.py quick_validate
 ```
+
+Workflow semantics are verified by pytest in `tests/test_repo_hygiene.py`. The
+dependency-free `quick_validate` command continues to check the local CLI and
+documentation contract.
 
 ## Pull Request Expectations
 

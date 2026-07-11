@@ -364,8 +364,10 @@ def test_maintainer_docs_cover_local_checks_and_private_reporting():
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     for expected in (
         "# Contributing",
+        "python -m pip install pytest -r requirements-test.txt",
         "python -m pytest -q",
         "python .\\scripts\\henry_image.py quick_validate",
+        "Workflow semantics are verified by pytest",
         "CHANGELOG.md",
     ):
         assert expected in contributing
@@ -374,7 +376,12 @@ def test_maintainer_docs_cover_local_checks_and_private_reporting():
         "Report security issues privately.",
         "GitHub Private Vulnerability Reporting",
         "https://github.com/henrydontbbai/henry-image/security/advisories/new",
-        "Please avoid filing public issues",
+        "Please do not file public issues",
+        "live credentials, personal data, or exploit details",
+        "affected version or commit",
+        "reproduction steps or a proof of concept",
+        "5 business days",
+        "coordinated remediation",
         "## Supported Versions",
     ):
         assert expected in security
