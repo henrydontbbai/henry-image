@@ -1,6 +1,7 @@
 import io
 import json
 from pathlib import Path
+import ssl
 import sys
 import tempfile
 from urllib import error
@@ -577,6 +578,9 @@ def test_validated_https_connection_keeps_hostname_for_sni_and_host_header():
     raw_socket = FakeSocket()
 
     class FakeTLSContext:
+        verify_mode = ssl.CERT_REQUIRED
+        check_hostname = True
+
         def wrap_socket(self, sock, *, server_hostname):
             calls["tcp_socket"] = sock
             calls["server_hostname"] = server_hostname
